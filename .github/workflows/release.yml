@@ -36,41 +36,49 @@ jobs:
             target: aarch64-apple-darwin
             archive: tar.gz
             bin_ext: ""
+            rustflags: ""
 
           - os: macos-15-intel
             target: x86_64-apple-darwin
             archive: tar.gz
             bin_ext: ""
+            rustflags: ""
 
           - os: windows-2025
             target: x86_64-pc-windows-msvc
             archive: zip
             bin_ext: .exe
+            rustflags: "-C target-feature=+crt-static"
 
           - os: windows-11-arm
             target: aarch64-pc-windows-msvc
             archive: zip
             bin_ext: .exe
+            rustflags: "-C target-feature=+crt-static"
 
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-musl
             archive: tar.gz
             bin_ext: ""
+            rustflags: ""
 
           - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-musl
             archive: tar.gz
             bin_ext: ""
+            rustflags: ""
 
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
             bin_ext: ""
+            rustflags: ""
 
           - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
             bin_ext: ""
+            rustflags: ""
 
     steps:
       - name: Checkout
@@ -92,6 +100,7 @@ jobs:
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
+          RUSTFLAGS: ${{ matrix.rustflags }}
         run: cargo build --release --locked -p ${{ env.PACKAGE }} --target ${{ matrix.target }}
 
       - name: Smoke test
