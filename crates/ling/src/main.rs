@@ -1,5 +1,6 @@
 mod api_key;
 mod config;
+mod v1_api;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
@@ -36,6 +37,20 @@ struct Cli {
 enum Command {
     /// Login with an API Key from platform.listenai.com/keys.
     Login(LoginArgs),
+    /// Show the current API account.
+    Account {
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List available v1 models.
+    Models {
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Send a prompt to /v1/chat/completions.
+    Chat(ChatArgs),
     /// Platform app commands.
     App(AppArgs),
     /// Search ListenAI documentation center.
@@ -47,6 +62,34 @@ struct LoginArgs {
     /// API Key from platform.listenai.com/keys. If omitted, ling prompts for it.
     #[arg(long = "api-key", env = "LING_API_KEY")]
     api_key: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ChatArgs {
+    /// User prompt. Multiple words are joined with spaces.
+    #[arg(required = true)]
+    prompt: Vec<String>,
+    /// Chat model id.
+    #[arg(long, default_value = "qwen3-next-80b-a3b-instruct")]
+    model: String,
+    /// Optional system prompt.
+    #[arg(long)]
+    system: Option<String>,
+    /// Stream assistant text to stdout.
+    #[arg(long, conflicts_with = "json")]
+    stream: bool,
+    /// Print the raw JSON response.
+    #[arg(long)]
+    json: bool,
+    /// Sampling temperature.
+    #[arg(long)]
+    temperature: Option<f32>,
+    /// Nucleus sampling top_p.
+    #[arg(long = "top-p")]
+    top_p: Option<f32>,
+    /// Maximum output tokens.
+    #[arg(long = "max-tokens")]
+    max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Args)]
@@ -101,6 +144,9 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Login(args) => login(cli.api_base_url, args).await,
+        Command::Account { json } => account_command(cli.api_base_url, json).await,
+        Command::Models { json } => models_command(cli.api_base_url, json).await,
+        Command::Chat(args) => chat_command(cli.api_base_url, args).await,
         Command::App(args) => app_command(cli.api_base_url, args).await,
         Command::Wiki(args) => wiki_command(cli.docs_graphql_url, cli.docs_base_url, args).await,
     }
@@ -120,6 +166,54 @@ async fn login(api_base_url: String, args: LoginArgs) -> Result<()> {
 
     print_json(&output)
 }
+
+async fn account_command(api_base_url: String, json: bool) -> Result<()> {
+    let api_key = resolve_api_key()?;
+    let output = v1_api::account(&api_base_url, &api_key).await?;
+    if json {
+        print_json(&output)
+    } else {
+        println!("{}", v1_api::render_account(&output)?);
+        Ok(())
+    }
+}
+
+async fn models_command(api_base_url: String, json: bool) -> Result<()> {
+    let api_key = resolve_api_key()?;
+    let output = v1_api::models(&api_base_url, &api_key).await?;
+    if json {
+        print_json(&output)
+    } else {
+        println!("{}", v1_api::render_models(&output)?);
+        Ok(())
+    }
+}
+
+async fn chat_command(api_base_url: String, args: ChatArgs) -> Result<()> {
+    let api_key = resolve_api_key()?;
+    let request = v1_api::ChatRequest {
+        model: args.model,
+        prompt: args.prompt.join(" "),
+        system: args.system,
+        stream: args.stream,
+        temperature: args.temperature,
+        top_p: args.top_p,
+        max_tokens: args.max_tokens,
+    };
+
+    if request.stream {
+        v1_api::chat_completion_stream(&api_base_url, &api_key, &request).await
+    } else {
+        let output = v1_api::chat_completion(&api_base_url, &api_key, &request).await?;
+        if args.json {
+            print_json(&output)
+        } else {
+            println!("{}", v1_api::render_chat_completion(&output)?);
+            Ok(())
+        }
+    }
+}
+
 async fn app_command(api_base_url: String, args: AppArgs) -> Result<()> {
     let api_key = resolve_api_key()?;
 
@@ -164,11 +258,23 @@ async fn wiki_command(
 ) -> Result<()> {
     match args.command {
         WikiCommand::Search { keywords, json } => {
-            let output =
-                ling_plugin_wiki::search(&docs_graphql_url, &docs_base_url, &keywords).await?;
+            let keyword_count = keywords
+                .iter()
+                .filter(|keyword| !keyword.trim().is_empty())
+                .count();
             if json {
+                let output =
+                    ling_plugin_wiki::search(&docs_graphql_url, &docs_base_url, &keywords).await?;
                 print_json(&output)
+            } else if keyword_count > 1 {
+                let groups =
+                    ling_plugin_wiki::search_grouped(&docs_graphql_url, &docs_base_url, &keywords)
+                        .await?;
+                println!("{}", ling_plugin_wiki::render_search_groups(&groups));
+                Ok(())
             } else {
+                let output =
+                    ling_plugin_wiki::search(&docs_graphql_url, &docs_base_url, &keywords).await?;
                 println!("{}", ling_plugin_wiki::render_search_results(&output));
                 Ok(())
             }

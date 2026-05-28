@@ -10,7 +10,14 @@ pub struct WikiSearchOutput {
     pub url: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct WikiSearchGroup {
+    pub keyword: String,
+    pub results: Vec<WikiSearchOutput>,
+}
+
 const MAX_RENDERED_SEARCH_RESULTS: usize = 20;
+const MAX_RENDERED_GROUP_RESULTS: usize = 5;
 
 const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b' ')
@@ -93,10 +100,7 @@ pub async fn search(
                 format!("{}:{}", result.locale, result.path)
             };
             let entry = merged.entry(key).or_insert_with(|| {
-                let output = WikiSearchOutput {
-                    title: strip_html_tags(&result.title),
-                    url: docs_url(docs_base_url, &result.locale, &result.path),
-                };
+                let output = search_output(docs_base_url, &result);
                 let current = MergedResult {
                     output,
                     matched_keywords: HashSet::new(),
@@ -118,6 +122,40 @@ pub async fn search(
     });
 
     Ok(values.into_iter().map(|item| item.output).collect())
+}
+
+pub async fn search_grouped(
+    graphql_url: &str,
+    docs_base_url: &str,
+    keywords: &[String],
+) -> Result<Vec<WikiSearchGroup>> {
+    if keywords.is_empty() {
+        anyhow::bail!("请至少提供一个关键词，例如：ling wiki search 标准API 获取密钥");
+    }
+
+    let client = Client::builder()
+        .user_agent(concat!("ling/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let mut groups = Vec::new();
+
+    for keyword in keywords {
+        let keyword = keyword.trim();
+        if keyword.is_empty() {
+            continue;
+        }
+
+        let results = search_one(&client, graphql_url, keyword)
+            .await?
+            .into_iter()
+            .map(|result| search_output(docs_base_url, &result))
+            .collect();
+        groups.push(WikiSearchGroup {
+            keyword: keyword.to_owned(),
+            results,
+        });
+    }
+
+    Ok(groups)
 }
 
 pub fn render_search_results(results: &[WikiSearchOutput]) -> String {
@@ -148,6 +186,52 @@ pub fn render_search_results(results: &[WikiSearchOutput]) -> String {
     } else {
         output.push_str("\n\n使用 --json 输出 JSON。");
     }
+    output
+}
+
+pub fn render_search_groups(groups: &[WikiSearchGroup]) -> String {
+    if groups.is_empty() || groups.iter().all(|group| group.results.is_empty()) {
+        return "未找到相关文档。使用 --json 输出 JSON。".to_owned();
+    }
+
+    let mut output = format!(
+        "按 {} 个搜索词展示相关文档，每个最多展示 {} 条：",
+        groups.len(),
+        MAX_RENDERED_GROUP_RESULTS
+    );
+    for group in groups {
+        let display_count = group.results.len().min(MAX_RENDERED_GROUP_RESULTS);
+        let section_title = if group.results.len() > MAX_RENDERED_GROUP_RESULTS {
+            format!(
+                "\n\n=== {}（{} 条，展示前 {} 条） ===",
+                group.keyword,
+                group.results.len(),
+                display_count
+            )
+        } else {
+            format!(
+                "\n\n=== {}（{} 条） ===",
+                group.keyword,
+                group.results.len()
+            )
+        };
+        output.push_str(&section_title);
+
+        if group.results.is_empty() {
+            output.push_str("\n未找到相关文档。");
+            continue;
+        }
+
+        for (index, result) in group.results.iter().take(display_count).enumerate() {
+            output.push_str(&format!(
+                "\n{}. {}\n   {}",
+                index + 1,
+                result.title,
+                decode_url_for_display(&result.url)
+            ));
+        }
+    }
+    output.push_str("\n\n使用 --json 输出合并去重后的完整 JSON。");
     output
 }
 
@@ -204,6 +288,13 @@ fn docs_url(base_url: &str, locale: &str, path: &str) -> String {
 
 fn encode_segment(segment: &str) -> String {
     utf8_percent_encode(segment, PATH_SEGMENT_ENCODE_SET).to_string()
+}
+
+fn search_output(docs_base_url: &str, result: &PageSearchResult) -> WikiSearchOutput {
+    WikiSearchOutput {
+        title: strip_html_tags(&result.title),
+        url: docs_url(docs_base_url, &result.locale, &result.path),
+    }
 }
 
 fn decode_url_for_display(url: &str) -> String {
@@ -282,5 +373,38 @@ mod tests {
         assert!(output.contains("20. 文档20"));
         assert!(!output.contains("21. 文档21"));
         assert!(output.contains("使用 --json 输出全部 JSON。"));
+    }
+
+    #[test]
+    fn renders_grouped_search_results_with_five_items_per_keyword() {
+        let groups = vec![
+            WikiSearchGroup {
+                keyword: "第三方".to_owned(),
+                results: (1..=6)
+                    .map(|index| WikiSearchOutput {
+                        title: format!("第三方文档{index}"),
+                        url: format!(
+                            "https://docs2.listenai.com/zh/%E7%AC%AC%E4%B8%89%E6%96%B9{index}"
+                        ),
+                    })
+                    .collect(),
+            },
+            WikiSearchGroup {
+                keyword: "CSK".to_owned(),
+                results: vec![WikiSearchOutput {
+                    title: "CSK文档".to_owned(),
+                    url: "https://docs2.listenai.com/zh/CSK".to_owned(),
+                }],
+            },
+        ];
+
+        let output = render_search_groups(&groups);
+        assert!(output.contains("按 2 个搜索词展示相关文档，每个最多展示 5 条："));
+        assert!(output.contains("=== 第三方（6 条，展示前 5 条） ==="));
+        assert!(output.contains("5. 第三方文档5"));
+        assert!(!output.contains("6. 第三方文档6"));
+        assert!(output.contains("https://docs2.listenai.com/zh/第三方1"));
+        assert!(output.contains("=== CSK（1 条） ==="));
+        assert!(output.contains("1. CSK文档"));
     }
 }
