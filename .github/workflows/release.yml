@@ -88,11 +88,10 @@ jobs:
           sudo apt-get install -y musl-tools
 
       - name: Build release binary
+        # Use musl-gcc only for C dependencies like ring; let rustc handle the final musl link.
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: cargo build --release --locked -p ${{ env.PACKAGE }} --target ${{ matrix.target }}
 
       - name: Smoke test
