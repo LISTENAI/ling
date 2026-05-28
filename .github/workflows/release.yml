@@ -1,0 +1,193 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release, for example v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  BIN_NAME: ling
+  PACKAGE: ling
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            archive: tar.gz
+            bin_ext: ""
+
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
+            bin_ext: ""
+
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            bin_ext: .exe
+
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            archive: zip
+            bin_ext: .exe
+
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            archive: tar.gz
+            bin_ext: ""
+
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-musl
+            archive: tar.gz
+            bin_ext: ""
+
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            bin_ext: ""
+
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            bin_ext: ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install Linux musl toolchain
+        if: contains(matrix.target, 'musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Build release binary
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: cargo build --release --locked -p ${{ env.PACKAGE }} --target ${{ matrix.target }}
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/${BIN_NAME}${{ matrix.bin_ext }}"
+          "${bin}" --help >/dev/null
+
+      - name: Package asset
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+          fi
+
+          package_dir="${BIN_NAME}-${tag}-${{ matrix.target }}"
+          staging="dist/${package_dir}"
+          mkdir -p "${staging}"
+
+          bin="target/${{ matrix.target }}/release/${BIN_NAME}${{ matrix.bin_ext }}"
+          cp "${bin}" "${staging}/"
+          cp README.md "${staging}/"
+          cp LICENSE* "${staging}/" 2>/dev/null || true
+
+          python - <<'PY'
+          import os
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          archive = os.environ["ARCHIVE"]
+          package_dir = Path(os.environ["PACKAGE_DIR"])
+          dist = Path("dist")
+
+          if archive == "zip":
+              asset_path = dist / f"{package_dir.name}.zip"
+              with zipfile.ZipFile(asset_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                  for path in sorted(package_dir.rglob("*")):
+                      zf.write(path, path.relative_to(dist))
+          else:
+              asset_path = dist / f"{package_dir.name}.tar.gz"
+              with tarfile.open(asset_path, "w:gz") as tf:
+                  tf.add(package_dir, arcname=package_dir.name)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"asset_path={asset_path.as_posix()}\n")
+          PY
+        env:
+          ARCHIVE: ${{ matrix.archive }}
+          PACKAGE_DIR: dist/${{ env.BIN_NAME }}-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}-${{ matrix.target }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ steps.package.outputs.asset_path }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-22.04
+    needs: build
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+          fi
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release upload "${tag}" dist/* --clobber
+          else
+            gh release create "${tag}" dist/* --verify-tag --generate-notes
+          fi
