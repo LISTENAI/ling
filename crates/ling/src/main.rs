@@ -1,0 +1,197 @@
+mod api_key;
+mod config;
+
+use anyhow::Result;
+use clap::{Args, Parser, Subcommand};
+
+#[derive(Debug, Parser)]
+#[command(name = "ling", version, about = "ListenAI local CLI")]
+struct Cli {
+    #[arg(
+        long,
+        env = "LING_API_BASE_URL",
+        default_value = "https://api.listenai.com"
+    )]
+    api_base_url: String,
+
+    #[arg(
+        long,
+        env = "LING_DOCS_GRAPHQL_URL",
+        default_value = "https://docs2.listenai.com/graphql"
+    )]
+    docs_graphql_url: String,
+
+    #[arg(
+        long,
+        env = "LING_DOCS_BASE_URL",
+        default_value = "https://docs2.listenai.com"
+    )]
+    docs_base_url: String,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Login with an API Key from platform.listenai.com/keys.
+    Login(LoginArgs),
+    /// Platform app commands.
+    App(AppArgs),
+    /// Search ListenAI documentation center.
+    Wiki(WikiArgs),
+}
+
+#[derive(Debug, Args)]
+struct LoginArgs {
+    /// API Key from platform.listenai.com/keys. If omitted, ling prompts for it.
+    #[arg(long = "api-key", env = "LING_API_KEY")]
+    api_key: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct AppArgs {
+    #[command(subcommand)]
+    command: AppCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum AppCommand {
+    /// List projects with the saved /keys API Key.
+    List {
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+        #[arg(long = "page-size", default_value_t = 20)]
+        page_size: u32,
+        #[arg(long = "service-type", value_parser = ["device", "api"])]
+        service_type: Option<String>,
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect a project with the saved /keys API Key.
+    Inspect {
+        project_id: String,
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Args)]
+struct WikiArgs {
+    #[command(subcommand)]
+    command: WikiCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum WikiCommand {
+    /// Search docs2 by one or more independent keywords.
+    Search {
+        /// Print JSON output.
+        #[arg(long)]
+        json: bool,
+        keywords: Vec<String>,
+    },
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Command::Login(args) => login(cli.api_base_url, args).await,
+        Command::App(args) => app_command(cli.api_base_url, args).await,
+        Command::Wiki(args) => wiki_command(cli.docs_graphql_url, cli.docs_base_url, args).await,
+    }
+}
+
+async fn login(api_base_url: String, args: LoginArgs) -> Result<()> {
+    let api_key = match args.api_key {
+        Some(api_key) => api_key,
+        None => rpassword::prompt_password("请输入 platform.listenai.com/keys 页面里的 API Key: ")?,
+    };
+
+    let output = api_key::login_with_api_key(&api_base_url, &api_key).await?;
+
+    let mut cfg = config::LingConfig::load()?;
+    cfg.api_key = Some(api_key::strip_bearer(&api_key));
+    cfg.save()?;
+
+    print_json(&output)
+}
+async fn app_command(api_base_url: String, args: AppArgs) -> Result<()> {
+    let api_key = resolve_api_key()?;
+
+    match args.command {
+        AppCommand::List {
+            page,
+            page_size,
+            service_type,
+            json,
+        } => {
+            let output = ling_plugin_app::list_projects(
+                &api_base_url,
+                &api_key,
+                page,
+                page_size,
+                service_type.as_deref(),
+            )
+            .await?;
+            if json {
+                print_json(&output)
+            } else {
+                println!("{}", ling_plugin_app::render_project_list(&output)?);
+                Ok(())
+            }
+        }
+        AppCommand::Inspect { project_id, json } => {
+            let output =
+                ling_plugin_app::inspect_project(&api_base_url, &api_key, &project_id).await?;
+            if json {
+                print_json(&output)
+            } else {
+                println!("{}", ling_plugin_app::render_project_inspect(&output)?);
+                Ok(())
+            }
+        }
+    }
+}
+async fn wiki_command(
+    docs_graphql_url: String,
+    docs_base_url: String,
+    args: WikiArgs,
+) -> Result<()> {
+    match args.command {
+        WikiCommand::Search { keywords, json } => {
+            let output =
+                ling_plugin_wiki::search(&docs_graphql_url, &docs_base_url, &keywords).await?;
+            if json {
+                print_json(&output)
+            } else {
+                println!("{}", ling_plugin_wiki::render_search_results(&output));
+                Ok(())
+            }
+        }
+    }
+}
+
+fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
+fn resolve_api_key() -> Result<String> {
+    if let Ok(api_key) = std::env::var("LING_API_KEY") {
+        let api_key = api_key::strip_bearer(&api_key);
+        if !api_key.is_empty() {
+            return Ok(api_key);
+        }
+    }
+
+    let cfg = config::LingConfig::load()?;
+    cfg.api_key
+        .filter(|api_key| !api_key.trim().is_empty())
+        .map(|api_key| api_key::strip_bearer(&api_key))
+        .ok_or_else(|| anyhow::anyhow!("未找到 API Key，请先执行 `ling login` 或设置 LING_API_KEY"))
+}

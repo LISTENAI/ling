@@ -1,0 +1,204 @@
+# ling
+
+ListenAI 本地 CLI 工具。以 `platform.listenai.com/keys` 页面里的用户 API Key 作为登录凭据。
+
+- `ling login`：保存 `/keys` 页面 API Key，并调用公开 `GET /v1/models` 校验。
+- `ling app list`：查看平台应用列表，默认输出终端表格，`--json` 输出原始 JSON。
+- `ling app inspect <project_id>`：查看单个应用摘要，默认输出精简配置视图，`--json` 输出原始 JSON。
+- `ling wiki search <关键词...>`：搜索 docs2 文档中心，默认输出标题和已解码 URL，`--json` 输出完整 JSON。
+
+> `/keys` API Key 主要用于 `/v1/*` 开放 API。CLI 不直接调用 `/internal/*`，也不依赖 `/platform/*` 的 platform JWT。
+
+## 目录结构
+
+```text
+ling/
+|- Cargo.toml
+|- Makefile
+|- crates/
+   |- ling/              # CLI 工具核心，负责命令解析、配置读写和插件调度
+   |- ling-plugin-wiki/  # 文档中心模块，负责 ling wiki 命令
+   |- ling-plugin-app/   # 平台大模型应用模块，负责 ling app 命令
+```
+
+## 本地安装
+
+开发机上推荐直接安装到 `~/.cargo/bin/ling`：
+
+```bash
+make install
+ling --help
+```
+
+等价的 Cargo 命令：
+
+```bash
+cargo install --path crates/ling --locked --force
+```
+
+如果 `ling` 命令找不到，确认 `~/.cargo/bin` 在 PATH 中：
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+## Docker Compose 开发
+
+容器内 Rust toolchain 固定为 `1.95.0`：
+
+```bash
+make docker-test
+make docker-lint
+make docker-build
+```
+
+也可以直接使用 Docker Compose：
+
+```bash
+docker compose run --rm test
+docker compose run --rm lint
+docker compose run --rm dev cargo build --release
+```
+
+本地常用开发命令：
+
+```bash
+make fmt
+make test
+make lint
+make build
+```
+
+## 登录
+
+交互输入 API Key：
+
+```bash
+ling login
+```
+
+通过参数或环境变量传入 `/keys` 页面 API Key：
+
+```bash
+ling login --api-key '<api-key>'
+LING_API_KEY='<api-key>' ling login
+```
+
+默认配置保存到 `~/.config/listenai/ling/config.json`，也可以用 `LING_CONFIG` 覆盖配置文件路径。
+
+## 环境切换
+
+默认 API 地址是生产环境：
+
+```bash
+ling app list
+```
+
+访问其他环境时，把 `--api-base-url` 放在子命令前：
+
+```bash
+ling --api-base-url https://xxx.listenai.com app list
+ling --api-base-url https://xxx.listenai.com app inspect <project_id>
+```
+
+也可以长期设置环境变量：
+
+```bash
+export LING_API_BASE_URL=https://xxx.listenai.com
+ling app list
+```
+
+## 应用列表
+
+默认输出终端表格，固定展示重要字段：
+
+```bash
+ling app list
+```
+
+表格列：
+
+```text
+Name │ Project ID │ App ID │ Type │ Deploy │ Cost │ Status │ Created
+```
+
+分页参数：
+
+```bash
+ling app list --page 2
+ling app list --page 2 --page-size 20
+ling app list --service-type device
+```
+
+底部会显示当前分页和下一页/上一页命令：
+
+```text
+Showing 20 of 64 apps (page 1/4; page size 20). Use --json for raw output.
+Next: ling app list --page 2
+```
+
+输出服务端原始 JSON：
+
+```bash
+ling app list --json
+```
+
+## 应用详情
+
+默认输出适合终端阅读的摘要，只展示关键信息：
+
+```bash
+ling app inspect <project_id>
+```
+
+摘要包含：
+
+- 概览：项目 ID、应用 ID、产品 ID、产品密钥、计费、创建人、创建时间
+- 角色：角色名、默认角色、类型、音色、角色知识库数量
+- 配置：唤醒词、主模型、应用版本、更新策略、知识库数量、专业词汇数量、提示语数量、MCP 服务器数量
+- 能力：长期记忆、声纹识别、联网搜索、文字生成图片、图片内容理解
+
+`inspect` 默认会明文展示用户自己项目下的产品密钥，方便复制使用；注意不要把终端输出贴到公开日志或截图里。
+
+输出服务端原始 JSON：
+
+```bash
+ling app inspect <project_id> --json
+```
+
+## 文档中心搜索
+
+按空格拆分多个关键词，分别调用 docs2 GraphQL 搜索后合并去重；默认最多输出前 20 条标题和已解码 URL：
+
+```bash
+ling wiki search 标准API 获取密钥
+```
+
+示例输出：
+
+```text
+找到 1 条文档：
+1. 标准API
+   https://docs2.listenai.com/zh/大模型开发/API接口/标准API
+
+使用 --json 输出 JSON。
+```
+
+输出完整 JSON：
+
+```bash
+ling wiki search 标准API 获取密钥 --json
+```
+
+docs2 `pages.search` 是关键词/全文检索，不是本地向量语义搜索。
+
+## 接口边界
+
+当前公开接口：
+
+- `GET https://api.listenai.com/v1/models`
+- `GET https://api.listenai.com/v1/projects`
+- `GET https://api.listenai.com/v1/projects/:id`
+- `POST https://docs2.listenai.com/graphql`
+
+`ling-plugin-app` 只接入 API Key 可鉴权的公开 `/v1/*` 接口；不要依赖 platform JWT 或 internal route。

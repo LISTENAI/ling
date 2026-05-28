@@ -1,0 +1,48 @@
+services:
+  dev:
+    build:
+      context: .
+      target: dev
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target:/workspace/target
+    environment:
+      - RUST_LOG=info
+      - LING_API_KEY
+      - LING_CONFIG
+      - LING_API_BASE_URL
+      - LING_DOCS_GRAPHQL_URL
+      - LING_DOCS_BASE_URL
+    command: sleep infinity
+
+  test:
+    build:
+      context: .
+      target: dev
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target:/workspace/target
+    command: cargo test --workspace
+
+  lint:
+    build:
+      context: .
+      target: dev
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target:/workspace/target
+    command: sh -c "cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings"
+
+volumes:
+  cargo-registry:
+  cargo-git:
+  target:
