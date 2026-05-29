@@ -1,30 +1,40 @@
 # ling
 
-ListenAI 本地 CLI 工具。以 `platform.listenai.com/keys` 页面里的用户 API Key 作为登录凭据。
+ListenAI 本地 CLI 工具。使用 ListenAI API Key 登录后，可以在终端里查看账号、模型、应用，并发起对话。
 
-- `ling login`：保存 `/keys` 页面 API Key，并调用公开 `GET /v1/models` 校验。
+- `ling login`：保存并校验 API Key。
 - `ling account`：查看当前 API Key 对应的账号信息，`--json` 输出原始 JSON。
 - `ling models`：查看当前 API Key 可用模型列表，`--json` 输出原始 JSON。
-- `ling chat <prompt>`：调用 `/v1/chat/completions` 发起对话，支持 `--stream` 和 `--json`。
+- `ling chat <prompt>`：发起对话，支持 `--stream` 和 `--json`。
 - `ling app list`：查看平台应用列表，默认输出终端表格，`--json` 输出原始 JSON。
 - `ling app inspect <project_id>`：查看单个应用摘要，默认输出精简配置视图，`--json` 输出原始 JSON。
-- `ling wiki search <关键词...>`：搜索 docs2 文档中心，默认输出标题和已解码 URL；多关键词按词分组展示，`--json` 输出完整 JSON。
+- `ling wiki search <关键词...>`：搜索 ListenAI 文档中心，默认输出标题和 URL；多关键词按词分组展示，`--json` 输出完整 JSON。
 
-> `/keys` API Key 主要用于 `/v1/*` 开放 API。CLI 不直接调用 `/internal/*`，也不依赖 `/platform/*` 的 platform JWT。
+## 快速安装
 
-## 目录结构
+macOS / Linux：
 
-```text
-ling/
-|- Cargo.toml
-|- Makefile
-|- crates/
-   |- ling/              # CLI 工具核心，负责命令解析、配置读写和插件调度
-   |- ling-plugin-wiki/  # 文档中心模块，负责 ling wiki 命令
-   |- ling-plugin-app/   # 平台大模型应用模块，负责 ling app 命令
+```bash
+curl -fsSL https://raw.githubusercontent.com/LISTENAI/ling/main/install.sh | sh
 ```
 
-## 本地安装
+Windows PowerShell：
+
+```powershell
+irm https://raw.githubusercontent.com/LISTENAI/ling/main/install.ps1 | iex
+```
+
+默认安装最新 GitHub Release。也可以指定版本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LISTENAI/ling/main/install.sh | LING_VERSION=v0.1.0 sh
+```
+
+```powershell
+$env:LING_VERSION = "v0.1.0"; irm https://raw.githubusercontent.com/LISTENAI/ling/main/install.ps1 | iex
+```
+
+## 本地开发
 
 开发机上推荐直接安装到 `~/.cargo/bin/ling`：
 
@@ -232,18 +242,3 @@ ling wiki search 标准API 获取密钥
 ```bash
 ling wiki search 标准API 获取密钥 --json
 ```
-
-docs2 `pages.search` 是关键词/全文检索，不是本地向量语义搜索。
-
-## 接口边界
-
-当前公开接口：
-
-- `GET https://api.listenai.com/v1/account`
-- `GET https://api.listenai.com/v1/models`
-- `POST https://api.listenai.com/v1/chat/completions`
-- `GET https://api.listenai.com/v1/projects`
-- `GET https://api.listenai.com/v1/projects/:id`
-- `POST https://docs2.listenai.com/graphql`
-
-`ling-plugin-app` 只接入 API Key 可鉴权的公开 `/v1/*` 接口；不要依赖 platform JWT 或 internal route。
