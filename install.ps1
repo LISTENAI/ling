@@ -18,10 +18,29 @@ function Invoke-GitHubJson {
 }
 
 function Resolve-Target {
-    $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+    $arch = $null
+    try {
+        $runtimeArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+        if ($runtimeArch) {
+            $arch = $runtimeArch.ToString().ToLowerInvariant()
+        }
+    } catch {
+        # Windows PowerShell 5.1 on older .NET can miss RuntimeInformation.
+    }
+
+    if (-not $arch) {
+        $envArch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+        if ($envArch) {
+            $arch = $envArch.ToLowerInvariant()
+        }
+    }
+
     switch ($arch) {
+        "amd64" { return "x86_64-pc-windows-msvc" }
         "x64" { return "x86_64-pc-windows-msvc" }
+        "x86_64" { return "x86_64-pc-windows-msvc" }
         "arm64" { return "aarch64-pc-windows-msvc" }
+        "aarch64" { return "aarch64-pc-windows-msvc" }
         default { throw "Unsupported CPU architecture: $arch" }
     }
 }
@@ -57,7 +76,8 @@ function Save-ReleaseAsset {
 function Test-CommandOnPath {
     param([string] $Directory)
     $full = [System.IO.Path]::GetFullPath($Directory).TrimEnd('\')
-    foreach ($part in ($env:Path -split ';')) {
+    $currentPath = if ($env:Path) { $env:Path } else { "" }
+    foreach ($part in ($currentPath -split ';')) {
         if (-not $part) { continue }
         try {
             if ([System.IO.Path]::GetFullPath($part).TrimEnd('\') -ieq $full) {
@@ -132,7 +152,12 @@ try {
                 $newUserPath = $userPath
             }
             [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
-            $env:Path = $env:Path.TrimEnd(';') + ";" + $fullInstallDir
+            $currentPath = if ($env:Path) { $env:Path.TrimEnd(';') } else { "" }
+            if ($currentPath) {
+                $env:Path = $currentPath + ";" + $fullInstallDir
+            } else {
+                $env:Path = $fullInstallDir
+            }
             Write-Host "Added $fullInstallDir to your user PATH. Restart the terminal if 'ling' is not found."
         }
     }
