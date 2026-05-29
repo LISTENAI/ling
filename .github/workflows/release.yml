@@ -86,6 +86,23 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
+      - name: Verify release tag matches Cargo version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+          fi
+
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/ling/Cargo.toml | head -n 1)"
+          expected_tag="v${cargo_version}"
+          if [[ "${tag}" != "${expected_tag}" ]]; then
+            echo "Release tag ${tag} must match crates/ling version ${expected_tag}" >&2
+            exit 1
+          fi
+
       - name: Install Rust target
         run: rustup target add ${{ matrix.target }}
 
