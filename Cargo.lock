@@ -522,6 +522,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dirs",
+ "libc",
  "ling-plugin-app",
  "ling-plugin-wiki",
  "reqwest",
@@ -529,6 +530,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

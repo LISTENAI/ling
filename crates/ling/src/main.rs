@@ -1,9 +1,12 @@
 mod api_key;
 mod config;
+mod secret_prompt;
+mod terminal;
 mod v1_api;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
+use std::process::ExitCode;
 
 #[derive(Debug, Parser)]
 #[command(name = "ling", version, about = "ListenAI local CLI")]
@@ -70,7 +73,7 @@ struct ChatArgs {
     #[arg(required = true)]
     prompt: Vec<String>,
     /// Chat model id.
-    #[arg(long, default_value = "qwen3-next-80b-a3b-instruct")]
+    #[arg(long, default_value = "doubao-seed-1.6-flash")]
     model: String,
     /// Optional system prompt.
     #[arg(long)]
@@ -139,9 +142,29 @@ enum WikiCommand {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
+async fn main() -> ExitCode {
+    let _terminal_encoding = terminal::init();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => {
+            let code = err.exit_code();
+            if err.print().is_err() {
+                eprintln!("Error: failed to print command-line error");
+            }
+            return exit_code(code);
+        }
+    };
 
+    match run(cli).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("Error: {err:?}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Login(args) => login(cli.api_base_url, args).await,
         Command::Account { json } => account_command(cli.api_base_url, json).await,
@@ -152,10 +175,18 @@ async fn main() -> Result<()> {
     }
 }
 
+fn exit_code(code: i32) -> ExitCode {
+    if code == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(code.clamp(1, u8::MAX as i32) as u8)
+    }
+}
+
 async fn login(api_base_url: String, args: LoginArgs) -> Result<()> {
     let api_key = match args.api_key {
         Some(api_key) => api_key,
-        None => rpassword::prompt_password("请输入 platform.listenai.com/keys 页面里的 API Key: ")?,
+        None => secret_prompt::prompt_api_key()?,
     };
 
     let output = api_key::login_with_api_key(&api_base_url, &api_key).await?;

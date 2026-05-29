@@ -236,11 +236,6 @@ async fn parse_json_response(response: reqwest::Response, message: &str) -> Resu
 }
 
 fn api_error(status: StatusCode, message: &str, body: &str) -> anyhow::Error {
-    if status == StatusCode::UNAUTHORIZED {
-        return anyhow::anyhow!(
-            "{message}：HTTP 401，请先确认 `ling login` 使用的是 /keys 页面 API Key"
-        );
-    }
     anyhow::anyhow!("{message}：HTTP {status} {body}")
 }
 

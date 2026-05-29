@@ -3,10 +3,12 @@
 CARGO ?= cargo
 PACKAGE ?= ling
 BIN ?= ling
+INSTALL_ROOT ?= $(HOME)/.local
+INSTALL_BIN_DIR := $(INSTALL_ROOT)/bin
 
 help:
 	@echo "Targets:"
-	@echo "  make install      Install ling to ~/.cargo/bin"
+	@echo "  make install      Install ling to $(INSTALL_BIN_DIR)"
 	@echo "  make build        Build release binary"
 	@echo "  make test         Run workspace tests locally"
 	@echo "  make lint         Run fmt check and clippy locally"
@@ -18,8 +20,10 @@ help:
 	@echo "  make clean        Remove local target directory"
 
 install:
-	$(CARGO) install --path crates/$(PACKAGE) --locked --force
-	@echo "$(BIN) installed. Try: $(BIN) --help"
+	$(CARGO) install --path crates/$(PACKAGE) --locked --force --root "$(INSTALL_ROOT)"
+	@echo "$(BIN) installed to $(INSTALL_BIN_DIR)/$(BIN)"
+	@case ":$$PATH:" in *":$(INSTALL_BIN_DIR):"*) ;; *) echo "Warning: $(INSTALL_BIN_DIR) is not in PATH";; esac
+	@echo "Try: $(BIN) --help"
 
 build:
 	$(CARGO) build --release -p $(PACKAGE)

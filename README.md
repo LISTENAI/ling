@@ -36,7 +36,7 @@ $env:LING_VERSION = "v0.1.0"; irm https://raw.githubusercontent.com/LISTENAI/lin
 
 ## 本地开发
 
-开发机上推荐直接安装到 `~/.cargo/bin/ling`：
+开发机上默认安装到 `~/.local/bin/ling`，和快速安装脚本保持一致：
 
 ```bash
 make install
@@ -46,13 +46,20 @@ ling --help
 等价的 Cargo 命令：
 
 ```bash
-cargo install --path crates/ling --locked --force
+cargo install --path crates/ling --locked --force --root "$HOME/.local"
 ```
 
-如果 `ling` 命令找不到，确认 `~/.cargo/bin` 在 PATH 中：
+如果想安装到 `~/.cargo/bin/ling`：
 
 ```bash
-export PATH="$HOME/.cargo/bin:$PATH"
+make install INSTALL_ROOT="$HOME/.cargo"
+```
+
+如果 `ling` 命令找不到，确认安装目录的 `bin` 在 PATH 中；如果 `ling` 仍指向旧路径，用 `type -a ling` 检查：
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+type -a ling
 ```
 
 ## Docker Compose 开发
@@ -89,6 +96,8 @@ make build
 ```bash
 ling login
 ```
+
+检测到粘贴事件后会立即显示脱敏预览，例如 `65785f8b...ab632ee2`，无需等回车；完整 key 不会回显。
 
 通过参数或环境变量传入 `/keys` 页面 API Key：
 
@@ -145,7 +154,7 @@ ling models --json
 
 ## 对话
 
-默认使用 `qwen3-next-80b-a3b-instruct` 调用 `/v1/chat/completions`：
+默认使用 `doubao-seed-1.6-flash` 调用 `/v1/chat/completions`：
 
 ```bash
 ling chat "广州有什么好玩的"
