@@ -9,6 +9,7 @@ ListenAI 本地 CLI 工具。使用 ListenAI API Key 登录后，可以在终端
 - `ling app list`：查看平台应用列表，默认输出终端表格，`--json` 输出原始 JSON。
 - `ling app inspect <project_id>`：查看单个应用摘要，默认输出精简配置视图，`--json` 输出原始 JSON。
 - `ling wiki search <关键词...>`：搜索 ListenAI 文档中心，默认输出标题和 URL；多关键词按词分组展示，`--json` 输出完整 JSON。
+- `ling update`：把当前 `ling` 可执行文件更新到最新 GitHub Release。
 
 ## 快速安装
 
@@ -32,6 +33,18 @@ curl -fsSL https://raw.githubusercontent.com/LISTENAI/ling/main/install.sh | LIN
 
 ```powershell
 $env:LING_VERSION = "v0.1.0"; irm https://raw.githubusercontent.com/LISTENAI/ling/main/install.ps1 | iex
+```
+
+已安装后可直接更新到最新 GitHub Release：
+
+```bash
+ling update
+```
+
+如果访问私有仓库或遇到 GitHub API 限流，可以设置 `GH_TOKEN` 或 `GITHUB_TOKEN` 后再执行：
+
+```bash
+GH_TOKEN='<github-token>' ling update
 ```
 
 ## 本地开发

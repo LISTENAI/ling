@@ -2,6 +2,7 @@ mod api_key;
 mod config;
 mod secret_prompt;
 mod terminal;
+mod update;
 mod v1_api;
 
 use anyhow::Result;
@@ -58,6 +59,8 @@ enum Command {
     App(AppArgs),
     /// Search ListenAI documentation center.
     Wiki(WikiArgs),
+    /// Update ling to the latest GitHub release.
+    Update,
 }
 
 #[derive(Debug, Args)]
@@ -172,6 +175,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Chat(args) => chat_command(cli.api_base_url, args).await,
         Command::App(args) => app_command(cli.api_base_url, args).await,
         Command::Wiki(args) => wiki_command(cli.docs_graphql_url, cli.docs_base_url, args).await,
+        Command::Update => update::run().await,
     }
 }
 
