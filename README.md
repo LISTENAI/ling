@@ -10,39 +10,45 @@ ListenAI 本地 CLI 工具。使用 ListenAI API Key 登录后，可以在终端
 - `ling app inspect <project_id>`：查看单个应用摘要，默认输出精简配置视图，`--json` 输出原始 JSON。
 - `ling wiki search <关键词...>`：搜索 ListenAI 文档中心，默认输出标题和 URL；多关键词按词分组展示，`--json` 输出完整 JSON。
 
+## Agent Skill
+
+本项目包含一个 [Agent Skill](https://github.com/vercel-labs/skills)，可以让 AI 编程助手（Cursor、Claude Code、Windsurf 等）自动了解 `ling` 的用法。
+
+安装：
+
+```bash
+npx skills add LISTENAI/ling
+```
+
 ## 快速安装
+
+macOS：
+
+```bash
+brew install LISTENAI/tap/ling
+```
 
 macOS / Linux：
 
 ```bash
-export GH_TOKEN="<GitHub Token>"
-curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://raw.githubusercontent.com/LISTENAI/ling/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/LISTENAI/ling/main/install.sh | sh
 ```
 
 Windows PowerShell：
 
 ```powershell
-$env:GH_TOKEN = "<GitHub Token>"
-$headers = @{ Authorization = "Bearer $env:GH_TOKEN" }
-irm -Headers $headers https://raw.githubusercontent.com/LISTENAI/ling/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/LISTENAI/ling/main/install.ps1 | iex
 ```
-
-安装脚本位于私有仓库，`GH_TOKEN` 需要使用有仓库读取权限的 GitHub Token，不是
-`platform.listenai.com/keys` 页面里的 ListenAI API Key；不需要安装 `gh` CLI。
 
 默认安装最新 GitHub Release。也可以指定版本：
 
 ```bash
-export GH_TOKEN="<GitHub Token>"
-export LING_VERSION="v0.1.0"
-curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://raw.githubusercontent.com/LISTENAI/ling/main/install.sh | sh
+LING_VERSION="v0.1.0" curl -fsSL https://raw.githubusercontent.com/LISTENAI/ling/main/install.sh | sh
 ```
 
 ```powershell
-$env:GH_TOKEN = "<GitHub Token>"
 $env:LING_VERSION = "v0.1.0"
-$headers = @{ Authorization = "Bearer $env:GH_TOKEN" }
-irm -Headers $headers https://raw.githubusercontent.com/LISTENAI/ling/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/LISTENAI/ling/main/install.ps1 | iex
 ```
 
 ## 本地开发
