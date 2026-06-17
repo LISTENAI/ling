@@ -23,12 +23,12 @@ pub async fn list_projects(
     get_json(url, api_key).await
 }
 
-pub async fn inspect_project(api_base_url: &str, api_key: &str, project_id: &str) -> Result<Value> {
+pub async fn inspect_product(api_base_url: &str, api_key: &str, product_id: &str) -> Result<Value> {
     let mut url = api_url(api_base_url, "/v1/projects/")?;
     url.path_segments_mut()
         .map_err(|_| anyhow!("接口 URL 不支持 path segment 拼接"))?
         .pop_if_empty()
-        .push(project_id);
+        .push(product_id);
 
     get_json(url, api_key).await
 }
@@ -45,7 +45,7 @@ pub fn render_project_list(value: &Value) -> Result<String> {
 
     let headers = [
         "Name",
-        "Project ID",
+        "Product ID",
         "App ID",
         "Type",
         "Deploy",
@@ -58,7 +58,7 @@ pub fn render_project_list(value: &Value) -> Result<String> {
         .map(|project| {
             vec![
                 field(project, "name"),
-                field(project, "id"),
+                field(project, "product_id"),
                 field(project, "app_id"),
                 field(project, "service_type"),
                 field(project, "deploy_type"),
@@ -478,16 +478,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn appends_project_id_as_single_path_segment() {
+    fn appends_product_id_as_single_path_segment() {
         let mut url = api_url("https://api.listenai.com", "/v1/projects/").unwrap();
         url.path_segments_mut()
             .unwrap()
             .pop_if_empty()
-            .push("project/id");
+            .push("product/id");
 
         assert_eq!(
             url.as_str(),
-            "https://api.listenai.com/v1/projects/project%2Fid"
+            "https://api.listenai.com/v1/projects/product%2Fid"
         );
     }
 
@@ -497,6 +497,7 @@ mod tests {
             "data": [{
                 "name": "小聆",
                 "id": "2d910f43-9133-4f05-a8e2-ef2f7ac86c8e",
+                "product_id": "adf675fb-2e92-4c5b-b367-74710f048b2a",
                 "app_id": "b8c2f846",
                 "service_type": "device",
                 "deploy_type": "config",
@@ -510,7 +511,10 @@ mod tests {
         });
 
         let table = render_project_list(&value).unwrap();
-        assert!(table.contains("Project ID"));
+        assert!(table.contains("Product ID"));
+        assert!(!table.contains("Project ID"));
+        assert!(table.contains("adf675fb-2e92-4c5b-b367-74710f048b2a"));
+        assert!(!table.contains("2d910f43-9133-4f05-a8e2-ef2f7ac86c8e"));
         assert!(table.contains("小聆"));
         assert!(table.contains("2026-04-02 11:05"));
         assert!(table.contains("page 1/1"));

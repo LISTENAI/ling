@@ -7,7 +7,7 @@ ListenAI 本地 CLI 工具。使用 ListenAI API Key 登录后，可以在终端
 - `ling models`：查看当前 API Key 可用模型列表，`--json` 输出原始 JSON。
 - `ling chat <prompt>`：发起对话，支持 `--stream` 和 `--json`。
 - `ling app list`：查看平台应用列表，默认输出终端表格，`--json` 输出原始 JSON。
-- `ling app inspect <project_id>`：查看单个应用摘要，默认输出精简配置视图，`--json` 输出原始 JSON。
+- `ling app inspect <product_id>`：查看单个应用摘要，默认输出精简配置视图，`--json` 输出原始 JSON。
 - `ling wiki search <关键词...>`：搜索 ListenAI 文档中心，默认输出标题和 URL；多关键词按词分组展示，`--json` 输出完整 JSON。
 
 ## Agent Skill
@@ -143,7 +143,7 @@ ling --api-base-url https://xxx.listenai.com account
 ling --api-base-url https://xxx.listenai.com models
 ling --api-base-url https://xxx.listenai.com chat "你好"
 ling --api-base-url https://xxx.listenai.com app list
-ling --api-base-url https://xxx.listenai.com app inspect <project_id>
+ling --api-base-url https://xxx.listenai.com app inspect <product_id>
 ```
 
 也可以长期设置环境变量：
@@ -198,7 +198,7 @@ ling app list
 表格列：
 
 ```text
-Name │ Project ID │ App ID │ Type │ Deploy │ Cost │ Status │ Created
+Name │ Product ID │ App ID │ Type │ Deploy │ Cost │ Status │ Created
 ```
 
 分页参数：
@@ -227,7 +227,7 @@ ling app list --json
 默认输出适合终端阅读的摘要，只展示关键信息：
 
 ```bash
-ling app inspect <project_id>
+ling app inspect <product_id>
 ```
 
 摘要包含：
@@ -242,7 +242,7 @@ ling app inspect <project_id>
 输出服务端原始 JSON：
 
 ```bash
-ling app inspect <project_id> --json
+ling app inspect <product_id> --json
 ```
 
 ## 文档中心搜索

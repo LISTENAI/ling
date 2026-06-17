@@ -115,9 +115,10 @@ enum AppCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Inspect a project with the saved /keys API Key.
+    /// Inspect an app by product_id with the saved /keys API Key.
     Inspect {
-        project_id: String,
+        #[arg(value_name = "product_id")]
+        product_id: String,
         /// Print the raw JSON response.
         #[arg(long)]
         json: bool,
@@ -270,9 +271,9 @@ async fn app_command(api_base_url: String, args: AppArgs) -> Result<()> {
                 Ok(())
             }
         }
-        AppCommand::Inspect { project_id, json } => {
+        AppCommand::Inspect { product_id, json } => {
             let output =
-                ling_plugin_app::inspect_project(&api_base_url, &api_key, &project_id).await?;
+                ling_plugin_app::inspect_product(&api_base_url, &api_key, &product_id).await?;
             if json {
                 print_json(&output)
             } else {

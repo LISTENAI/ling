@@ -86,8 +86,8 @@ ling app list --page 2 --page-size 20            # 自定义页大小
 ling app list --service-type device              # 按服务类型过滤
 ling app list --json                             # 原始 JSON
 
-ling app inspect <project_id>                     # 精简摘要视图
-ling app inspect <project_id> --json              # 原始 JSON
+ling app inspect <product_id>                     # 精简摘要视图
+ling app inspect <product_id> --json              # 原始 JSON
 ```
 
 `inspect` 展示内容：项目 ID、应用 ID、产品 ID/密钥、计费、角色、模型、能力（长期记忆、声纹识别、联网搜索、文字生成图片、图片内容理解）。
