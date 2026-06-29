@@ -116,7 +116,7 @@ ling build --release                           # 生产压缩构建
 ling dev                                       # 本地热重载 + Mock 设备 REPL
 ling deploy --product-id <product_id> --version v1.0.0 --dry-run
 ling deploy \
-  --product-id 2b108aff-3da2-479b-b1b9-88e58f8fad2d \
+  --product-id <product_id> \
   --version v1.0.0 \
   --version-name 首次发布 \
   --description 支持基础语音对话
