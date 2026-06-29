@@ -194,21 +194,21 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Command::Create(args) => {
             let ctx = ling_plugin_agent::AgentContext {
                 api_base_url: cli.api_base_url,
-                saved_api_key: None,
+                saved_api_key: resolve_optional_api_key()?,
             };
             ling_plugin_agent::create_command(&ctx, args).await
         }
         Command::Build(args) => {
             let ctx = ling_plugin_agent::AgentContext {
                 api_base_url: cli.api_base_url,
-                saved_api_key: None,
+                saved_api_key: resolve_optional_api_key()?,
             };
             ling_plugin_agent::build_command(&ctx, args).await
         }
         Command::Dev => {
             let ctx = ling_plugin_agent::AgentContext {
                 api_base_url: cli.api_base_url,
-                saved_api_key: None,
+                saved_api_key: resolve_optional_api_key()?,
             };
             ling_plugin_agent::dev_command(&ctx).await
         }
@@ -379,18 +379,23 @@ fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
 }
 
 fn resolve_api_key() -> Result<String> {
+    resolve_optional_api_key()?
+        .ok_or_else(|| anyhow::anyhow!("未找到 API Key，请先执行 `ling login` 或设置 LING_API_KEY"))
+}
+
+fn resolve_optional_api_key() -> Result<Option<String>> {
     if let Ok(api_key) = std::env::var("LING_API_KEY") {
         let api_key = api_key::strip_bearer(&api_key);
         if !api_key.is_empty() {
-            return Ok(api_key);
+            return Ok(Some(api_key));
         }
     }
 
     let cfg = config::LingConfig::load()?;
-    cfg.api_key
+    Ok(cfg
+        .api_key
         .filter(|api_key| !api_key.trim().is_empty())
-        .map(|api_key| api_key::strip_bearer(&api_key))
-        .ok_or_else(|| anyhow::anyhow!("未找到 API Key，请先执行 `ling login` 或设置 LING_API_KEY"))
+        .map(|api_key| api_key::strip_bearer(&api_key)))
 }
 
 #[cfg(test)]

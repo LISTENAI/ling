@@ -235,7 +235,7 @@ async fn scaffold_project(ctx: &AgentContext, name: &str, template: &str) -> Res
 
     let sdk = fetch_required_latest_framework_sdk(ctx).await?;
     println!("downloading Framework SDK {}...", sdk.version);
-    let archive = download_framework_sdk_archive(&sdk).await?;
+    let archive = download_framework_sdk_archive(ctx, &sdk).await?;
     let dest = PathBuf::from(name);
     extract_project_template_from_sdk_archive(&archive, template, &dest)?;
     normalize_scaffolded_project(&dest)?;
@@ -285,7 +285,7 @@ async fn maybe_check_agent_project_version(ctx: &AgentContext) -> Result<()> {
     let current = read_or_init_agent_project_version(&marker, &latest_sdk.version)?;
     match compare_project_versions(&current, &latest_sdk.version) {
         Ok(Ordering::Less) => {
-            prompt_agent_project_update(&cwd, &marker, &current, &latest_sdk).await?
+            prompt_agent_project_update(ctx, &cwd, &marker, &current, &latest_sdk).await?
         }
         Ok(_) => {}
         Err(err) => {
@@ -334,12 +334,15 @@ async fn fetch_latest_framework_sdk(ctx: &AgentContext) -> Result<Option<Framewo
         .timeout(Duration::from_secs(30))
         .build()
         .context("build HTTP client")?;
-    let response = client
-        .get(url.clone())
-        .header(
-            reqwest::header::USER_AGENT,
-            concat!("ling/", env!("CARGO_PKG_VERSION")),
-        )
+    let mut request = client.get(url.clone()).header(
+        reqwest::header::USER_AGENT,
+        concat!("ling/", env!("CARGO_PKG_VERSION")),
+    );
+    if let Some(api_key) = framework_sdk_api_key(ctx) {
+        request = request.bearer_auth(api_key);
+    }
+
+    let response = request
         .send()
         .await
         .with_context(|| format!("fetch latest Framework SDK from {url}"))?;
@@ -405,19 +408,25 @@ fn framework_sdk_latest_url(ctx: &AgentContext) -> Result<Url> {
     Ok(url)
 }
 
-async fn download_framework_sdk_archive(sdk: &FrameworkSdkRecord) -> Result<Vec<u8>> {
+async fn download_framework_sdk_archive(
+    ctx: &AgentContext,
+    sdk: &FrameworkSdkRecord,
+) -> Result<Vec<u8>> {
     let url = Url::parse(sdk.sdk.trim())
         .with_context(|| format!("invalid Framework SDK URL: {}", sdk.sdk))?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
         .context("build HTTP client")?;
-    let response = client
-        .get(url.clone())
-        .header(
-            reqwest::header::USER_AGENT,
-            concat!("ling/", env!("CARGO_PKG_VERSION")),
-        )
+    let mut request = client.get(url.clone()).header(
+        reqwest::header::USER_AGENT,
+        concat!("ling/", env!("CARGO_PKG_VERSION")),
+    );
+    if let Some(api_key) = framework_sdk_api_key(ctx) {
+        request = request.bearer_auth(api_key);
+    }
+
+    let response = request
         .send()
         .await
         .with_context(|| format!("download Framework SDK from {url}"))?;
@@ -446,6 +455,7 @@ async fn download_framework_sdk_archive(sdk: &FrameworkSdkRecord) -> Result<Vec<
 }
 
 async fn prompt_agent_project_update(
+    ctx: &AgentContext,
     project_dir: &Path,
     marker: &Path,
     current: &str,
@@ -472,7 +482,7 @@ async fn prompt_agent_project_update(
         .read_line(&mut input)
         .context("read update prompt input")?;
     match input.trim().to_ascii_lowercase().as_str() {
-        "y" | "yes" => update_agent_project(project_dir, marker, latest).await,
+        "y" | "yes" => update_agent_project(ctx, project_dir, marker, latest).await,
         "n" | "no" | "" => {
             println!("skip agent project update");
             Ok(())
@@ -485,12 +495,13 @@ async fn prompt_agent_project_update(
 }
 
 async fn update_agent_project(
+    ctx: &AgentContext,
     project_dir: &Path,
     marker: &Path,
     latest: &FrameworkSdkRecord,
 ) -> Result<()> {
     println!("downloading Framework SDK {}...", latest.version);
-    let archive = download_framework_sdk_archive(latest).await?;
+    let archive = download_framework_sdk_archive(ctx, latest).await?;
     update_project_sdk_from_archive(&archive, project_dir)?;
     write_agent_project_version(marker, &latest.version)?;
     println!("agent project SDK updated to {}", latest.version);
@@ -1067,6 +1078,16 @@ fn choose_deploy_api_key(
     }
 
     bail!("API key not set - provide --api-key, run `ling login`, or set LING_API_KEY")
+}
+
+fn framework_sdk_api_key(ctx: &AgentContext) -> Option<String> {
+    choose_deploy_api_key(
+        None,
+        env::var("LING_API_KEY").ok(),
+        ctx.saved_api_key.clone(),
+        env::var("LISTENAI_API_KEY").ok(),
+    )
+    .ok()
 }
 
 fn strip_bearer(api_key: &str) -> String {
@@ -1710,6 +1731,35 @@ mod tests {
     }
 
     #[test]
+    fn framework_sdk_api_key_uses_env_then_saved_then_legacy() {
+        let _guard = cwd_lock().lock().expect("env lock");
+        let old_ling = env::var("LING_API_KEY").ok();
+        let old_legacy = env::var("LISTENAI_API_KEY").ok();
+
+        env::remove_var("LING_API_KEY");
+        env::remove_var("LISTENAI_API_KEY");
+        let ctx = AgentContext {
+            api_base_url: "https://api.listenai.com".to_string(),
+            saved_api_key: Some("Bearer saved-key".to_string()),
+        };
+        assert_eq!(framework_sdk_api_key(&ctx).as_deref(), Some("saved-key"));
+
+        env::set_var("LING_API_KEY", "Bearer env-key");
+        assert_eq!(framework_sdk_api_key(&ctx).as_deref(), Some("env-key"));
+
+        env::remove_var("LING_API_KEY");
+        env::set_var("LISTENAI_API_KEY", "legacy-key");
+        let ctx = AgentContext {
+            api_base_url: "https://api.listenai.com".to_string(),
+            saved_api_key: None,
+        };
+        assert_eq!(framework_sdk_api_key(&ctx).as_deref(), Some("legacy-key"));
+
+        restore_env("LING_API_KEY", old_ling);
+        restore_env("LISTENAI_API_KEY", old_legacy);
+    }
+
+    #[test]
     fn deploy_api_key_rejects_empty_candidates() {
         let err = choose_deploy_api_key(
             Some("  "),
@@ -1768,6 +1818,13 @@ mod tests {
         builder
             .append_data(&mut header, path, bytes)
             .expect("append archive file");
+    }
+
+    fn restore_env(key: &str, value: Option<String>) {
+        match value {
+            Some(value) => env::set_var(key, value),
+            None => env::remove_var(key),
+        }
     }
 
     fn cwd_lock() -> &'static Mutex<()> {
