@@ -223,7 +223,6 @@ fi
 
 say "Installed to $INSTALL_DIR/$BIN"
 "$INSTALL_DIR/$BIN" --help >/dev/null || die "installed binary failed to run"
-
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *)

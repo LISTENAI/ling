@@ -3,7 +3,7 @@
 CARGO ?= cargo
 PACKAGE ?= ling
 BIN ?= ling
-INSTALL_ROOT ?= $(HOME)/.local
+INSTALL_ROOT ?= $(HOME)/.cargo
 INSTALL_BIN_DIR := $(INSTALL_ROOT)/bin
 
 help:

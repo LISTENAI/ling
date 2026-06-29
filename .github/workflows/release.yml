@@ -199,3 +199,18 @@ jobs:
           else
             gh release create "${tag}" dist/* --verify-tag --generate-notes
           fi
+
+      - name: Bump Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "HOMEBREW_TAP_TOKEN is not set; skipping Homebrew tap bump."
+            exit 0
+          fi
+
+          gh api repos/LISTENAI/homebrew-tap/dispatches \
+            -f event_type=bump \
+            -f 'client_payload[project]=ling'

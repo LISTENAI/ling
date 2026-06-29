@@ -9,6 +9,12 @@ ListenAI 本地 CLI 工具。使用 ListenAI API Key 登录后，可以在终端
 - `ling app list`：查看平台应用列表，默认输出终端表格，`--json` 输出原始 JSON。
 - `ling app inspect <product_id>`：查看单个应用摘要，默认输出精简配置视图，`--json` 输出原始 JSON。
 - `ling wiki search <关键词...>`：搜索 ListenAI 文档中心，默认输出标题和 URL；多关键词按词分组展示，`--json` 输出完整 JSON。
+- `ling create/build/dev/deploy`：创建、构建、本地运行和部署 ListenAI Agent 项目。
+
+## 环境依赖
+
+- 基础 CLI 功能只需要 `ling` 二进制。
+- Agent 项目命令（`ling create/build/dev`）依赖 `Node.js 18+`；`ling create` 会从平台获取最新 Framework SDK 并默认执行 `npm install`。
 
 ## Agent Skill
 
@@ -51,25 +57,61 @@ $env:LING_VERSION = "v0.1.0"
 irm https://raw.githubusercontent.com/LISTENAI/ling/main/install.ps1 | iex
 ```
 
+## 更新
+
+Homebrew：
+
+```bash
+brew trust listenai/tap
+brew update
+brew upgrade ling
+```
+
+macOS / Linux 安装脚本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LISTENAI/ling/main/install.sh | sh
+```
+
+Windows PowerShell 安装脚本：
+
+```powershell
+irm https://raw.githubusercontent.com/LISTENAI/ling/main/install.ps1 | iex
+```
+
+本地开发版本：
+
+```bash
+cd /Users/zh/Projects/listenai/ling
+make install
+```
+
+更新后可确认实际使用的二进制：
+
+```bash
+type -a ling
+ling --version
+```
+
 ## 本地开发
 
-开发机上默认安装到 `~/.local/bin/ling`，和快速安装脚本保持一致：
+开发机上默认安装到 `~/.cargo/bin/ling`：
 
 ```bash
 make install
 ling --help
 ```
 
-等价的 Cargo 命令：
+也可以使用 Cargo 命令直接安装；`ling create/build/dev/deploy` 已在 Rust 主程序内实现，不需要额外二进制：
 
 ```bash
 cargo install --path crates/ling --locked --force --root "$HOME/.local"
 ```
 
-如果想安装到 `~/.cargo/bin/ling`：
+如果想安装到 `~/.local/bin/ling`：
 
 ```bash
-make install INSTALL_ROOT="$HOME/.cargo"
+make install INSTALL_ROOT="$HOME/.local"
 ```
 
 如果 `ling` 命令找不到，确认安装目录的 `bin` 在 PATH 中；如果 `ling` 仍指向旧路径，用 `type -a ling` 检查：
@@ -152,6 +194,52 @@ ling --api-base-url https://xxx.listenai.com app inspect <product_id>
 export LING_API_BASE_URL=https://xxx.listenai.com
 ling app list
 ```
+
+## Agent 开发命令
+
+`ling create/build/dev/deploy` 都由 `ling` Rust 主程序直接实现：
+
+```bash
+ling create my-agent
+cd my-agent
+ling build
+ling build --release
+ling build --entry src/main.ts --out dist/agent.min.js --release
+ling dev
+```
+
+`ling create` 会调用 `/external/framework/sdk/latest` 获取最新 Framework SDK，下载并解压其中的默认模板生成项目，然后自动执行 `npm install`；只想生成文件时可用 `ling create my-agent --no-install` 跳过依赖安装。
+
+`ling create` 会把 Framework SDK 的版本写入项目级 `.version` 文件。后续执行 `ling build`、`ling dev`、`ling deploy` 时会通过同一个接口检查该版本是否低于最新 SDK 版本；如果需要更新，交互终端会提示输入 `y` 或 `n`，输入 `y` 后会下载最新 SDK 并更新项目内 `sdk/` 目录。
+
+默认从当前目录读取 `agent.ts`，输出到 `dist/agent.js`。打包格式为 ES2017 IIFE，并把 `@listenai/agent-sdk` 解析到项目内 `sdk/src/index.ts`。`ling build` 会优先使用 `LING_ESBUILD_BIN`、项目内 `node_modules/.bin/esbuild`、PATH 中的 `esbuild`，找不到时通过 `npx`/`npm exec` 调用固定版本 esbuild。
+
+`ling dev` 会启动 esbuild watch，并用 Node.js Mock Host Harness 加载 bundle，提供热重载和 Mock 设备 REPL；输入一行文本回车即可向 Agent 发送一次 `isLast=true` 的文本消息。
+
+`ling deploy` 上传已构建的 JavaScript bundle 并创建 Agent 版本；也可以用 `--dry-run` 只做本地预览：
+
+```bash
+ling deploy --product-id prod_dev_local --version v1.0.0 --dry-run
+ling deploy \
+  --product-id 2b108aff-3da2-479b-b1b9-88e58f8fad2d \
+  --version v1.0.0 \
+  --version-name 首次发布 \
+  --description 支持基础语音对话 \
+  --sdk-version 0.1.0
+```
+
+`ling deploy` 会 PUT 上传 raw JavaScript bundle 到 `/v1/framework/agents/{productIdOrAppId}`。`--version` 必填；可以传 `0.1.0` 或 `v0.1.0`，上传时会规范为 `vX.Y.Z`。API Key 解析顺序：`--api-key`、`LING_API_KEY`、`ling login` 保存的配置、`LISTENAI_API_KEY`。
+
+常用参数含义：
+
+- `--product-id`：要部署到的 Product ID 或 App ID；服务端最终会解析为 App ID。
+- `--version`：本次上传的 Agent 版本，必填；可以传 `0.1.0` 或 `v0.1.0`，同一 App 下不能重复，且要大于已有最高版本。
+- `--version-name`：版本展示名称；不传时默认为 `<version> 版本`，例如 `--version 0.1.0` 会生成 `0.1.0 版本`。
+- `--description`：版本说明，例如本次新增或修复的能力。
+- `--sdk-version`：Agent SDK 版本；不传时读取当前目录 `.version`，读取不到则不传该参数。
+- `--bundle`：已构建 JS bundle 路径，默认 `dist/agent.js`。
+- `--endpoint`：平台 API 地址，默认 `https://api.listenai.com`，也可用全局 `--api-base-url` 指定。
+- `--dry-run`：只检查本地参数和 bundle，不实际上传。
 
 ## 账号与模型
 

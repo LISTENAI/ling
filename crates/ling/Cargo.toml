@@ -10,6 +10,7 @@ anyhow = "1"
 clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "5"
 libc = "0.2"
+ling-plugin-agent = { path = "../ling-plugin-agent" }
 ling-plugin-app = { path = "../ling-plugin-app" }
 ling-plugin-wiki = { path = "../ling-plugin-wiki" }
 rpassword = "7.3"

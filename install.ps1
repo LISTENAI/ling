@@ -130,14 +130,11 @@ try {
     if (-not (Test-Path $Source)) {
         throw "Binary not found in archive: $Source"
     }
-
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     $Destination = Join-Path $InstallDir "$Bin.exe"
     Copy-Item -Force $Source $Destination
-
     Write-Host "Installed to $Destination"
     & $Destination --help *> $null
-
     if (-not (Test-CommandOnPath $InstallDir)) {
         if ($env:LING_NO_PATH -eq "1") {
             Write-Host "Add $InstallDir to PATH if 'ling' is not found."

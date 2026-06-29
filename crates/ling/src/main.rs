@@ -54,6 +54,14 @@ enum Command {
     },
     /// Send a prompt to /v1/chat/completions.
     Chat(ChatArgs),
+    /// Scaffold a new agent project from a template.
+    Create(ling_plugin_agent::CreateArgs),
+    /// Bundle an agent project to a single JS file.
+    Build(ling_plugin_agent::BuildArgs),
+    /// Run an agent locally with hot reload and a mock device REPL.
+    Dev,
+    /// Preview or upload an agent bundle to the platform.
+    Deploy(ling_plugin_agent::DeployArgs),
     /// Platform app commands.
     App(AppArgs),
     /// Search ListenAI documentation center.
@@ -157,7 +165,7 @@ async fn main() -> ExitCode {
     };
 
     match run(cli).await {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(err) => {
             eprintln!("Error: {err:?}");
             ExitCode::FAILURE
@@ -165,18 +173,69 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run(cli: Cli) -> Result<()> {
+async fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
-        Command::Login(args) => login(cli.api_base_url, args).await,
-        Command::Account { json } => account_command(cli.api_base_url, json).await,
-        Command::Models { json } => models_command(cli.api_base_url, json).await,
-        Command::Chat(args) => chat_command(cli.api_base_url, args).await,
-        Command::App(args) => app_command(cli.api_base_url, args).await,
-        Command::Wiki(args) => wiki_command(cli.docs_graphql_url, cli.docs_base_url, args).await,
+        Command::Login(args) => {
+            login(cli.api_base_url, args).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Account { json } => {
+            account_command(cli.api_base_url, json).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Models { json } => {
+            models_command(cli.api_base_url, json).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Chat(args) => {
+            chat_command(cli.api_base_url, args).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Create(args) => {
+            let ctx = ling_plugin_agent::AgentContext {
+                api_base_url: cli.api_base_url,
+                saved_api_key: None,
+            };
+            ling_plugin_agent::create_command(&ctx, args).await
+        }
+        Command::Build(args) => {
+            let ctx = ling_plugin_agent::AgentContext {
+                api_base_url: cli.api_base_url,
+                saved_api_key: None,
+            };
+            ling_plugin_agent::build_command(&ctx, args).await
+        }
+        Command::Dev => {
+            let ctx = ling_plugin_agent::AgentContext {
+                api_base_url: cli.api_base_url,
+                saved_api_key: None,
+            };
+            ling_plugin_agent::dev_command(&ctx).await
+        }
+        Command::Deploy(args) => {
+            let saved_api_key = if args.dry_run {
+                None
+            } else {
+                config::LingConfig::load()?.api_key
+            };
+            let ctx = ling_plugin_agent::AgentContext {
+                api_base_url: cli.api_base_url,
+                saved_api_key,
+            };
+            ling_plugin_agent::deploy_command(&ctx, args).await
+        }
+        Command::App(args) => {
+            app_command(cli.api_base_url, args).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Wiki(args) => {
+            wiki_command(cli.docs_graphql_url, cli.docs_base_url, args).await?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
-fn exit_code(code: i32) -> ExitCode {
+pub(crate) fn exit_code(code: i32) -> ExitCode {
     if code == 0 {
         ExitCode::SUCCESS
     } else {
@@ -332,4 +391,71 @@ fn resolve_api_key() -> Result<String> {
         .filter(|api_key| !api_key.trim().is_empty())
         .map(|api_key| api_key::strip_bearer(&api_key))
         .ok_or_else(|| anyhow::anyhow!("未找到 API Key，请先执行 `ling login` 或设置 LING_API_KEY"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn parses_build_defaults() {
+        let cli = Cli::try_parse_from(["ling", "build"]).expect("parse build");
+
+        match cli.command {
+            Command::Build(build) => {
+                assert_eq!(build.entry, "agent.ts");
+                assert_eq!(build.out, "dist/agent.js");
+                assert!(!build.release);
+            }
+            other => panic!("expected build command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deploy_requires_product_id() {
+        let err = Cli::try_parse_from(["ling", "deploy", "--version", "v1.0.0", "--dry-run"])
+            .expect_err("product id should be required");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn deploy_requires_version() {
+        let err = Cli::try_parse_from(["ling", "deploy", "--product-id", "prod_dev_local"])
+            .expect_err("version should be required");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn parses_create_defaults() {
+        let cli = Cli::try_parse_from(["ling", "create", "my-agent"]).expect("parse create");
+
+        match cli.command {
+            Command::Create(create) => {
+                assert_eq!(create.name, "my-agent");
+                assert_eq!(create.template, "listenai");
+                assert!(!create.no_install);
+            }
+            other => panic!("expected create command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_create_no_install() {
+        let cli =
+            Cli::try_parse_from(["ling", "create", "my-agent", "--no-install"]).expect("parse");
+
+        match cli.command {
+            Command::Create(create) => assert!(create.no_install),
+            other => panic!("expected create command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn help_includes_agent_developer_commands() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(help.contains("create"));
+        assert!(help.contains("build"));
+        assert!(help.contains("deploy"));
+    }
 }
