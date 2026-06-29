@@ -571,7 +571,7 @@ dependencies = [
 
 [[package]]
 name = "ling"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "ling-plugin-agent"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "ling-plugin-app"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -615,7 +615,7 @@ dependencies = [
 
 [[package]]
 name = "ling-plugin-wiki"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "percent-encoding",

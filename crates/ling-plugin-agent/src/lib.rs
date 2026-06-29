@@ -774,7 +774,7 @@ fn install_project_deps(project_dir: &Path) -> Result<()> {
         );
     }
 
-    let npm = find_on_path(executable_name("npm")).ok_or_else(|| {
+    let npm = find_on_path_candidates("npm").ok_or_else(|| {
         anyhow!(
             "project created at {}, but npm was not found. Install Node.js/npm, then run `cd {} && npm install`",
             project_dir.display(),
@@ -874,24 +874,21 @@ fn resolve_esbuild_command() -> Result<CommandSpec> {
         }
     }
 
-    let local = PathBuf::from("node_modules")
-        .join(".bin")
-        .join(executable_name("esbuild"));
-    if local.is_file() {
+    if let Some(local) = find_local_node_bin("esbuild") {
         return Ok(CommandSpec {
             program: local.into_os_string(),
             prefix_args: vec![],
         });
     }
 
-    if let Some(path) = find_on_path(executable_name("esbuild")) {
+    if let Some(path) = find_on_path_candidates("esbuild") {
         return Ok(CommandSpec {
             program: path.into_os_string(),
             prefix_args: vec![],
         });
     }
 
-    if let Some(path) = find_on_path(executable_name("npx")) {
+    if let Some(path) = find_on_path_candidates("npx") {
         return Ok(CommandSpec {
             program: path.into_os_string(),
             prefix_args: vec![
@@ -901,7 +898,7 @@ fn resolve_esbuild_command() -> Result<CommandSpec> {
         });
     }
 
-    if let Some(path) = find_on_path(executable_name("npm")) {
+    if let Some(path) = find_on_path_candidates("npm") {
         return Ok(CommandSpec {
             program: path.into_os_string(),
             prefix_args: vec![
@@ -950,7 +947,7 @@ fn run_dev() -> Result<ExitCode> {
         );
     }
 
-    let node = find_on_path(executable_name("node"))
+    let node = find_on_path_candidates("node")
         .ok_or_else(|| anyhow!("node not found. Install Node.js to use `ling dev`"))?;
     let tmp = temp_dir("ling-dev")?;
     let bundle = tmp.join("agent.js");
@@ -1278,12 +1275,37 @@ fn exit_code(code: i32) -> ExitCode {
     }
 }
 
-fn executable_name(name: &str) -> OsString {
+fn executable_candidates(name: &str) -> Vec<OsString> {
     if cfg!(windows) {
-        OsString::from(format!("{name}.exe"))
+        windows_executable_candidates(name)
     } else {
-        OsString::from(name)
+        vec![OsString::from(name)]
     }
+}
+
+fn windows_executable_candidates(name: &str) -> Vec<OsString> {
+    [
+        format!("{name}.cmd"),
+        format!("{name}.exe"),
+        format!("{name}.bat"),
+        name.to_string(),
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect()
+}
+
+fn find_local_node_bin(name: &str) -> Option<PathBuf> {
+    executable_candidates(name)
+        .into_iter()
+        .map(|candidate| PathBuf::from("node_modules").join(".bin").join(candidate))
+        .find(|candidate| candidate.is_file())
+}
+
+fn find_on_path_candidates(name: &str) -> Option<PathBuf> {
+    executable_candidates(name)
+        .into_iter()
+        .find_map(find_on_path)
 }
 
 fn find_on_path(name: impl AsRef<OsStr>) -> Option<PathBuf> {
@@ -1757,6 +1779,19 @@ mod tests {
 
         restore_env("LING_API_KEY", old_ling);
         restore_env("LISTENAI_API_KEY", old_legacy);
+    }
+
+    #[test]
+    fn windows_executable_candidates_include_cmd_shims() {
+        let candidates = windows_executable_candidates("esbuild")
+            .into_iter()
+            .map(|value| value.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            candidates,
+            vec!["esbuild.cmd", "esbuild.exe", "esbuild.bat", "esbuild"]
+        );
     }
 
     #[test]
