@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use reqwest::{Client, StatusCode, Url};
+use reqwest::StatusCode;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -22,10 +22,8 @@ pub async fn login_with_api_key(api_base_url: &str, api_key: &str) -> Result<Log
 }
 
 async fn validate_api_key(api_base_url: &str, api_key: &str) -> Result<usize> {
-    let url = api_url(api_base_url, "/v1/models")?;
-    let response = Client::builder()
-        .user_agent(concat!("ling/", env!("CARGO_PKG_VERSION")))
-        .build()?
+    let url = ling_core::http_url(api_base_url, "/v1/models")?;
+    let response = ling_core::client()?
         .get(url)
         .header("authorization", bearer(api_key))
         .send()
@@ -48,25 +46,7 @@ async fn validate_api_key(api_base_url: &str, api_key: &str) -> Result<usize> {
     Ok(models.len())
 }
 
-fn api_url(api_base_url: &str, path: &str) -> Result<Url> {
-    let base_url = Url::parse(api_base_url).context("LING_API_BASE_URL 不是合法 URL")?;
-    base_url
-        .join(path.trim_start_matches('/'))
-        .context("接口 URL 拼接失败")
-}
-
-pub fn strip_bearer(api_key: &str) -> String {
-    let api_key = api_key.trim();
-    if api_key.to_ascii_lowercase().starts_with("bearer ") {
-        api_key[7..].trim().to_owned()
-    } else {
-        api_key.to_owned()
-    }
-}
-
-pub fn bearer(api_key: &str) -> String {
-    format!("Bearer {}", strip_bearer(api_key))
-}
+pub use ling_core::{bearer, strip_bearer};
 
 pub fn preview_key(api_key: &str) -> String {
     let api_key = strip_bearer(api_key);
