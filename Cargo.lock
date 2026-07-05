@@ -718,6 +718,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ling-plugin-kb"
+version = "0.1.5"
+dependencies = [
+ "anyhow",
+ "ling-core",
+ "reqwest",
+ "serde_json",
+ "unicode-width",
+]
+
+[[package]]
 name = "ling-plugin-wiki"
 version = "0.1.5"
 dependencies = [

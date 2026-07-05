@@ -1,0 +1,13 @@
+[package]
+name = "ling-plugin-kb"
+version = "0.1.5"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1"
+ling-core = { path = "../ling-core" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+unicode-width = "0.2"
