@@ -589,6 +589,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ling-core"
+version = "0.1.5"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "url",
+]
+
+[[package]]
 name = "ling-plugin-agent"
 version = "0.1.5"
 dependencies = [
