@@ -81,9 +81,7 @@ pub async fn search(
         anyhow::bail!("请至少提供一个关键词，例如：ling wiki search 标准API 获取密钥");
     }
 
-    let client = Client::builder()
-        .user_agent(concat!("ling/", env!("CARGO_PKG_VERSION")))
-        .build()?;
+    let client = ling_core::client()?;
     let mut merged: HashMap<String, MergedResult> = HashMap::new();
     let mut order = 0usize;
 
@@ -133,9 +131,7 @@ pub async fn search_grouped(
         anyhow::bail!("请至少提供一个关键词，例如：ling wiki search 标准API 获取密钥");
     }
 
-    let client = Client::builder()
-        .user_agent(concat!("ling/", env!("CARGO_PKG_VERSION")))
-        .build()?;
+    let client = ling_core::client()?;
     let mut groups = Vec::new();
 
     for keyword in keywords {

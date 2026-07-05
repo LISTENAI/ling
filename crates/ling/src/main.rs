@@ -259,6 +259,20 @@ enum AppCommand {
     },
     /// Send a simulated request through the cloud link and print all frames.
     Request(RequestArgs),
+    /// Look up an existing request record by SID.
+    Trace {
+        /// SID printed by `ling app request` or found in link frames.
+        sid: String,
+        /// How many hours back to search (default 24).
+        #[arg(long, default_value_t = 24)]
+        hours: u32,
+        /// Show the full request context and tool details.
+        #[arg(long)]
+        full: bool,
+        /// Print the raw matching records as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Device management.
     Device(DeviceArgs),
     /// Firmware OTA management.
@@ -878,6 +892,12 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
             }
         }
         AppCommand::Request(args) => request_command(cli, args, product).await?,
+        AppCommand::Trace {
+            sid,
+            hours,
+            full,
+            json,
+        } => trace_command(cli, &sid, hours, full, json).await?,
         AppCommand::Device(args) => device_command(cli, args, product).await?,
         AppCommand::Ota(args) => {
             let feature = match args.command {
@@ -1037,6 +1057,7 @@ async fn request_command(cli: &Ctx, args: RequestArgs, product: Option<String>) 
         llm_app: args.llm_app,
     };
 
+    let mut sid: Option<String> = None;
     ling_plugin_app::request::interaction_request(
         &cli.api_base_url,
         &product_id,
@@ -1044,11 +1065,50 @@ async fn request_command(cli: &Ctx, args: RequestArgs, product: Option<String>) 
         &input,
         &opts,
         |event| match event {
-            RequestEvent::Frame(frame) => println!("{frame}"),
+            RequestEvent::Frame(frame) => {
+                if sid.is_none() {
+                    sid = serde_json::from_str::<Value>(&frame)
+                        .ok()
+                        .and_then(|value| {
+                            value
+                                .get("sid")
+                                .and_then(Value::as_str)
+                                .filter(|sid| !sid.is_empty())
+                                .map(str::to_owned)
+                        });
+                }
+                println!("{frame}");
+            }
             RequestEvent::Binary(bytes) => eprintln!("[binary] {bytes} bytes"),
         },
     )
-    .await
+    .await?;
+
+    if let Some(sid) = sid {
+        eprintln!("sid: {sid}");
+        eprintln!("可用 `ling app trace {sid}` 查询该请求的记录。");
+    }
+    Ok(())
+}
+
+async fn trace_command(cli: &Ctx, sid: &str, hours: u32, full: bool, json: bool) -> Result<()> {
+    let api_key = resolve_api_key()?;
+    let outcome =
+        ling_plugin_app::records::find_by_sid(&cli.api_base_url, &api_key, sid, hours).await?;
+    // SID 是请求唯一标识：要么恰好一条，要么未命中（报错退出，便于脚本判断）
+    let Some(record) = outcome.record else {
+        anyhow::bail!(ling_plugin_app::records::miss_message(
+            sid,
+            hours,
+            outcome.truncated
+        ));
+    };
+    if json {
+        print_json(&record)
+    } else {
+        println!("{}", ling_plugin_app::records::render_record(&record, full));
+        Ok(())
+    }
 }
 
 async fn device_command(cli: &Ctx, args: DeviceArgs, product: Option<String>) -> Result<()> {

@@ -1,4 +1,5 @@
 pub mod config_view;
+pub mod records;
 pub mod request;
 
 use anyhow::{anyhow, Context, Result};

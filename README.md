@@ -11,7 +11,8 @@ ListenAI 本地 CLI 工具。使用 ListenAI API Key 登录后，可以在终端
 - `ling app list / inspect`：查看平台应用列表与摘要。
 - `ling app init <name>`：初始化本地 Agent 项目并关联平台应用（写入 `listenai.toml`）。
 - `ling app build / dev / deploy`：构建、本地运行和部署 Agent 项目。
-- `ling app request`：向云端发起一次端云链路模拟请求，打印所有返回帧。
+- `ling app request`：向云端发起一次端云链路模拟请求，打印所有返回帧并输出 SID。
+- `ling app trace <sid>`：按 SID 查询既有请求记录。
 - `ling app device quota/query/enforce`：设备额度、授权查询与白名单状态。
 - `ling app role/interact-mode/kb/lexicon/tone`：查看应用的角色、交互模式、知识库、专业词汇与提示语配置。
 - `ling kb`：账号级知识库增删查 + 文档管理 + 文本检索。
@@ -293,7 +294,16 @@ ling app request --text 你好 --device-id <device_id>     # 应用开启白名�
 ling app request --text 你好 --llm-app <app_id>          # 多应用场景指定应用
 ```
 
-输出为 JSON 帧流（`connected`/`started`/`result`(iat/nlp/tts)/`finish`），便于管道处理。
+输出为 JSON 帧流（`connected`/`started`/`result`(iat/nlp/tts)/`finish`），便于管道处理；结束后在 stderr 输出本次请求的 `sid`。
+
+按 SID 回查请求记录（默认检索最近 24 小时，`--hours` 调整时间窗）：
+
+```bash
+ling app trace <sid>                 # 概览 + 时间线（请求到达/技能命中/工具进出参/回复/响应完成）
+ling app trace <sid> --full          # 追加完整请求上下文与工具结果明细
+ling app trace <sid> --hours 2
+ling app trace <sid> --json          # 输出完整原始记录
+```
 
 ### 设备管理
 

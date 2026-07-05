@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 futures-util = "0.3"
 ling-core = { path = "../ling-core" }
 md-5 = "0.10"
