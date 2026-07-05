@@ -1,5 +1,8 @@
+pub mod config_view;
+pub mod request;
+
 use anyhow::{anyhow, Context, Result};
-use reqwest::{Client, StatusCode, Url};
+use reqwest::{StatusCode, Url};
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 
@@ -10,7 +13,7 @@ pub async fn list_projects(
     page_size: u32,
     service_type: Option<&str>,
 ) -> Result<Value> {
-    let mut url = api_url(api_base_url, "/v1/projects")?;
+    let mut url = ling_core::http_url(api_base_url, "/v1/projects")?;
     {
         let mut pairs = url.query_pairs_mut();
         pairs.append_pair("page", &page.to_string());
@@ -24,13 +27,39 @@ pub async fn list_projects(
 }
 
 pub async fn inspect_product(api_base_url: &str, api_key: &str, product_id: &str) -> Result<Value> {
-    let mut url = api_url(api_base_url, "/v1/projects/")?;
+    let mut url = ling_core::http_url(api_base_url, "/v1/projects/")?;
     url.path_segments_mut()
         .map_err(|_| anyhow!("接口 URL 不支持 path segment 拼接"))?
         .pop_if_empty()
         .push(product_id);
 
     get_json(url, api_key).await
+}
+
+/// 查询设备是否存在（POST /v1/device/query，云云）。
+pub async fn device_query(
+    api_base_url: &str,
+    api_key: &str,
+    product_id: &str,
+    device_id: &str,
+) -> Result<Value> {
+    let url = ling_core::http_url(api_base_url, "/v1/device/query")?;
+    let response = ling_core::client()?
+        .post(url)
+        .header("authorization", ling_core::bearer(api_key))
+        .json(&serde_json::json!({
+            "product_id": product_id,
+            "device_id": device_id,
+        }))
+        .send()
+        .await?;
+
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        anyhow::bail!("设备查询失败：HTTP {status} {body}");
+    }
+    serde_json::from_str(&body).context("设备查询响应不是合法 JSON")
 }
 
 pub fn render_project_list(value: &Value) -> Result<String> {
@@ -200,11 +229,9 @@ pub fn render_project_inspect(value: &Value) -> Result<String> {
 }
 
 async fn get_json(url: Url, api_key: &str) -> Result<Value> {
-    let response = Client::builder()
-        .user_agent(concat!("ling-plugin-app/", env!("CARGO_PKG_VERSION")))
-        .build()?
+    let response = ling_core::client()?
         .get(url)
-        .header("authorization", bearer(api_key))
+        .header("authorization", ling_core::bearer(api_key))
         .send()
         .await?;
 
@@ -222,27 +249,7 @@ async fn get_json(url: Url, api_key: &str) -> Result<Value> {
     serde_json::from_str(&body).context("app 接口响应不是合法 JSON")
 }
 
-fn api_url(api_base_url: &str, path: &str) -> Result<Url> {
-    let base_url = Url::parse(api_base_url).context("LING_API_BASE_URL 不是合法 URL")?;
-    base_url
-        .join(path.trim_start_matches('/'))
-        .context("接口 URL 拼接失败")
-}
-
-fn strip_bearer(api_key: &str) -> String {
-    let api_key = api_key.trim();
-    if api_key.to_ascii_lowercase().starts_with("bearer ") {
-        api_key[7..].trim().to_owned()
-    } else {
-        api_key.to_owned()
-    }
-}
-
-fn bearer(api_key: &str) -> String {
-    format!("Bearer {}", strip_bearer(api_key))
-}
-
-fn field(value: &Value, key: &str) -> String {
+pub(crate) fn field(value: &Value, key: &str) -> String {
     match value.get(key) {
         Some(Value::String(text)) => text.to_owned(),
         Some(Value::Number(number)) => number.to_string(),
@@ -262,7 +269,7 @@ fn format_created_at(value: &str) -> String {
     }
 }
 
-fn render_table(headers: &[&str], rows: &[Vec<String>]) -> String {
+pub(crate) fn render_table(headers: &[&str], rows: &[Vec<String>]) -> String {
     let mut widths = headers
         .iter()
         .map(|header| display_width(header))
@@ -330,7 +337,7 @@ fn option_field(value: Option<&Value>, key: &str) -> String {
         .unwrap_or_else(|| "-".to_owned())
 }
 
-fn string_field(value: Option<&Value>, key: &str) -> Option<String> {
+pub(crate) fn string_field(value: Option<&Value>, key: &str) -> Option<String> {
     value
         .and_then(|value| value.get(key))
         .and_then(Value::as_str)
@@ -339,7 +346,7 @@ fn string_field(value: Option<&Value>, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn array_len(value: Option<&Value>, key: &str) -> usize {
+pub(crate) fn array_len(value: Option<&Value>, key: &str) -> usize {
     value
         .and_then(|value| value.get(key))
         .and_then(Value::as_array)
@@ -347,7 +354,7 @@ fn array_len(value: Option<&Value>, key: &str) -> usize {
         .unwrap_or(0)
 }
 
-fn bool_field(value: Option<&Value>, key: &str) -> bool {
+pub(crate) fn bool_field(value: Option<&Value>, key: &str) -> bool {
     value
         .and_then(|value| value.get(key))
         .and_then(Value::as_bool)
@@ -479,7 +486,7 @@ mod tests {
 
     #[test]
     fn appends_product_id_as_single_path_segment() {
-        let mut url = api_url("https://api.listenai.com", "/v1/projects/").unwrap();
+        let mut url = ling_core::http_url("https://api.listenai.com", "/v1/projects/").unwrap();
         url.path_segments_mut()
             .unwrap()
             .pop_if_empty()
