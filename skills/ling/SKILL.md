@@ -1,6 +1,6 @@
 ---
 name: ling
-description: ListenAI 平台本地 CLI 工具，支持账号登录、模型对话、语音合成/识别（TTS/ASR）、应用与知识库管理、端云链路调试、文档搜索，以及云端 Agent 项目 init/build/dev/deploy 和端侧固件/arcs_mini 项目初始化。当用户需要在终端中与 ListenAI 平台或 Agent/固件开发项目交互时使用。
+description: ListenAI（聆思）平台本地 CLI 工具，覆盖小聆 AI / LSPlatform 开发全流程：账号登录、模型对话、语音合成/识别（TTS/ASR）、平台应用与知识库管理、端云链路在线调试（request/按 sid trace 请求）、文档中心搜索，以及云端 Agent 项目 init/build/dev/deploy（listenai.toml 关联 product_id）和端侧固件/arcs_mini 项目初始化。当用户提到 ling、小聆、聆思、LSPlatform、product_id、listenai.toml、唤醒词、提示语/提示音、发音人、端云调试、sid 查询，或需要在终端中与 ListenAI 平台交互时使用。
 ---
 
 # ling - ListenAI 本地 CLI 工具
@@ -13,11 +13,10 @@ ListenAI 平台的命令行工具。使用 ListenAI API Key 登录后，可以�
 - 用户需要在终端中与 ListenAI AI 模型对话，或调用语音合成（TTS）、语音识别（ASR）
 - 用户需要管理或查看 ListenAI 应用（列表、详情、角色、提示语、设备额度等）
 - 用户需要管理 ListenAI 知识库（增删查、文档、检索）
-- 用户需要向云端应用发起端云链路模拟请求（在线调试）
+- 用户需要向云端应用发起端云链路模拟请求（在线调试），或拿着 sid 回查一次请求
 - 用户需要搜索 ListenAI 文档中心
 - 用户需要初始化、构建、本地运行或部署 ListenAI Agent 项目
 - 用户在安装 ling 后，需要完成 API Key 登录、需求确认、云端/端侧项目初始化的标准启动流程
-- 用户需要在不同 ListenAI API 环境之间切换
 
 ## 安装
 
@@ -45,35 +44,18 @@ API Key 从 `platform.listenai.com/keys` 获取。
 
 完成安装并确认 `ling` 可执行后，按顺序推进：
 
-1. **登录**：请用户到 `https://platform.listenai.com/keys` 获取 API Key。优先运行 `ling login`，让用户在交互提示中粘贴密钥；不要在回复、日志或截图里暴露完整密钥。登录后执行 `ling account` 验证账号状态。
+1. **登录（由用户本人完成）**：登录是交互式操作，Agent 不要代替用户执行，也绝不要让用户把 API Key 粘贴到对话里。引导用户：到 `https://platform.listenai.com/keys` 获取 API Key，然后**在用户自己的终端里**运行 `ling login`，在交互提示中粘贴密钥（会显示脱敏预览，完整 key 不回显）。用户完成后，Agent 运行 `ling account` 验证登录状态。
 2. **确认需求**：用最少问题确认目标：云端 Agent 还是端侧固件；已有项目还是新建/拉取；目标设备、应用或 Product ID；本轮要完成开发、调试、构建还是部署。若用户描述已明确，复述判断并继续。
 3. **判断类型**：提到 Agent、云端技能、平台应用、模型对话、API 集成时，按云端 Agent 处理；提到固件、端侧、设备、开发板、唤醒、`arcs_mini` 时，按端侧固件处理；不确定时先向用户确认。
 4. **初始化项目**：
-   - 云端 Agent：在目标父目录执行 `ling app init <项目名>`，随后按提示选择要关联的平台应用（或用 `--product-id` 直接指定），关联结果写入项目 `listenai.toml`。已有项目则进入项目目录后继续 `ling app build`、`ling app dev` 或 `ling app deploy`。
+   - 云端 Agent：Agent 环境下没有交互式选择，先用 `ling app list` 查出目标应用的 product_id（不确定选哪个时问用户），再在目标父目录执行 `ling app init <项目名> --product-id <product_id>`；关联结果写入项目 `listenai.toml`。已有项目则进入项目目录后继续 `ling app build`、`ling app dev` 或 `ling app deploy`。
    - 端侧固件：拉取 arcs_mini 仓库。目录不存在时执行 `git clone https://cloud.listenai.com/CSKG836746/arcs-sdk/public/arcs_mini.git`；目录已存在时执行 `git -C arcs_mini pull --ff-only`。拉取后先阅读仓库 README 和构建脚本，再按用户需求操作。
-5. **执行前检查**：涉及 `npm install`、`ling app init`、`git clone/pull` 等联网或写文件步骤时，简要说明将执行的动作；涉及生产部署、密钥或产品密钥时，先确认环境和目标，避免泄露敏感信息。
-
-## 登录
-
-交互式输入 API Key（检测到粘贴事件后会立即显示脱敏预览，如 `65785f8b...ab632ee2`）：
-
-```bash
-ling login
-```
-
-通过参数或环境变量传入 API Key：
-
-```bash
-ling login --api-key '<api-key>'
-LING_API_KEY='<api-key>' ling login
-```
-
-配置保存到 `~/.config/listenai/ling/config.json`，可用 `LING_CONFIG` 环境变量覆盖路径。
+5. **执行前检查**：涉及 `npm install`、`ling app init`、`git clone/pull` 等联网或写文件步骤时，简要说明将执行的动作；涉及生产部署、密钥或产品密钥时，先确认目标，避免泄露敏感信息。
 
 ## 账号与模型
 
 ```bash
-ling account            # 查看当前账号信息
+ling account            # 查看当前账号信息（验证登录状态）
 ling account --json     # 输出原始 JSON
 
 ling ai models          # 查看可用模型列表
@@ -145,8 +127,6 @@ ling app device quota          # 设备额度与白名单状态
 ling app device query <device_id>   # 查询设备是否已授权
 ```
 
-角色/提示语/专业词汇/MCP/OTA/创建应用等**写操作**的平台开放 API 尚未上线，对应命令会输出明确提示，引导用户到平台网页端操作。
-
 ### 端云链路模拟请求（在线调试）
 
 发起一次真实端云交互并打印所有链路帧（JSON 行）：
@@ -165,17 +145,18 @@ ling app trace <sid> --full       # 追加完整请求上下文（system+多轮�
 ling app trace <sid> --hours 2 --json
 ```
 
+**注意**：`trace`（尤其 `--full`）输出包含终端用户的对话内容与请求上下文，属敏感数据，展示或转述时注意脱敏。
+
 ## Agent 项目
 
 ```bash
-ling app init my-agent                        # 拉取最新 Base 项目 + 交互式关联平台应用
-ling app init my-agent --product-id <product_id>
-ling app init my-agent --no-install           # 跳过 npm install
+ling app init my-agent --product-id <product_id>   # 拉取最新 Base 项目并关联平台应用
+ling app init my-agent --no-install                # 跳过 npm install
 cd my-agent
-ling app build                                        # 打包 agent.ts 到 dist/agent.js
-ling app build --release                              # 生产压缩构建
-ling app dev                                          # 本地热重载 + Mock 设备 REPL
-ling app deploy --version v1.0.0 --dry-run            # product_id 取自 listenai.toml
+ling app build                                     # 打包 agent.ts 到 dist/agent.js
+ling app build --release                           # 生产压缩构建
+ling app dev                                       # 本地热重载 + Mock 设备 REPL
+ling app deploy --version v1.0.0 --dry-run         # product_id 取自 listenai.toml
 ling app deploy \
   --product-id <product_id> \
   --version v1.0.0 \
@@ -185,7 +166,7 @@ ling app deploy \
 
 要点：
 
-- `init` 会调用 `/external/framework/sdk/latest` 获取最新 Framework SDK，解压默认模板，把 SDK 版本写入 `.version`，并把选中应用的 `product_id` 写入 `listenai.toml`
+- `init` 会获取最新 Framework SDK，解压默认模板，把 SDK 版本写入 `.version`，并把选中应用的 `product_id` 写入 `listenai.toml`；Agent 环境下请始终显式传 `--product-id`（交互式选择会被自动跳过）
 - `build/dev/deploy` 会用 `.version` 与最新 SDK 版本对比，需要更新时交互确认
 - `--version`：必填，`0.1.0` 或 `v0.1.0`，同一 App 下不能重复且需大于当前最高版本
 - `--product-id`：不传时读取当前目录 `listenai.toml`
@@ -196,12 +177,14 @@ ling app deploy \
 ```bash
 ling kb list
 ling kb create 产品手册
-ling kb delete <index_id>              # 交互确认，--yes 跳过
+ling kb delete <index_id> --yes        # 删除知识库（不可恢复）
 ling kb doc <index_id> list
 ling kb doc <index_id> add --name 说明书.txt --url https://example.com/说明书.txt
 ling kb doc <index_id> delete <doc_id>...
 ling kb query <index_id> 空调怎么开 --limit 5
 ```
+
+**删除规则（必须遵守）**：`kb delete` / `kb doc delete` 是不可恢复操作。Agent **禁止自作主张删除**——必须先向用户明确列出将要删除的对象并获得用户同意，之后才可以执行；Agent 执行时需带 `--yes`（非交互环境没有确认提示）。
 
 ## 文档中心搜索
 
@@ -213,9 +196,22 @@ ling wiki search 标准API                    # 单关键词（最多 20 条）
 ling wiki search 标准API --json             # 原始 JSON
 ```
 
+搜索结果只含标题和 URL。需要阅读文档全文时，用你自带的网页抓取工具（如 WebFetch）打开对应 URL 获取完整内容。
+
+## 常见错误速查
+
+| 错误信息 | 下一步 |
+| --- | --- |
+| `未找到 API Key` / HTTP 401 | 引导用户在自己的终端执行 `ling login`（见工作流第 1 步） |
+| `未指定应用：请传 --product-id …` | 传 `--product-id`，或进入含 `listenai.toml` 的项目目录执行 |
+| 设备授权失败 `20105`（白名单） | 该应用开启了设备白名单，改用已导入的设备 ID：`--device-id <id>` |
+| `WAV 格式不符合要求` | 音频需 16kHz 16bit LE 单声道；用 ffmpeg 转换后重试 |
+| `trace` 未找到 SID | 确认 sid 无误、未过期；加大 `--hours` 时间窗 |
+| `version must match vX.Y.Z` / 版本重复 | deploy 版本号需为 `X.Y.Z` 且大于该应用当前最高版本 |
+| `非交互环境，请追加 --yes` | 删除类命令在 Agent 环境需带 `--yes`（先取得用户同意） |
+
 ## 注意事项
 
 - `--json` 标志在几乎所有查询命令上都可用，输出服务端原始 JSON
-- `--api-base-url`（及 `LING_API_BASE_URL`）必须放在子命令**之前**；`--list-vcn` 等平台接口使用 `LING_PLATFORM_BASE_URL`
 - `app list` 底部会显示分页信息和推荐的上一页/下一页命令
 - 在含 `listenai.toml` 的项目目录内，`ling app` 系列命令自动使用其中的 `product_id`
