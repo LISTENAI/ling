@@ -73,6 +73,9 @@ struct LoginArgs {
     /// API Key from platform.listenai.com/keys. If omitted, ling prompts for it.
     #[arg(long = "api-key", env = "LING_API_KEY")]
     api_key: Option<String>,
+    /// Print the raw JSON response.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -255,7 +258,12 @@ async fn login(api_base_url: String, args: LoginArgs) -> Result<()> {
     cfg.api_key = Some(api_key::strip_bearer(&api_key));
     cfg.save()?;
 
-    print_json(&output)
+    if args.json {
+        print_json(&output)
+    } else {
+        println!("{}", api_key::render_login_success(&output, &api_base_url));
+        Ok(())
+    }
 }
 
 async fn account_command(api_base_url: String, json: bool) -> Result<()> {
@@ -379,8 +387,11 @@ fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
 }
 
 fn resolve_api_key() -> Result<String> {
-    resolve_optional_api_key()?
-        .ok_or_else(|| anyhow::anyhow!("未找到 API Key，请先执行 `ling login` 或设置 LING_API_KEY"))
+    resolve_optional_api_key()?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "未找到 API Key。请打开 https://platform.listenai.com/keys 获取 API Key，然后执行 `ling login` 或设置 LING_API_KEY"
+        )
+    })
 }
 
 fn resolve_optional_api_key() -> Result<Option<String>> {
@@ -453,6 +464,20 @@ mod tests {
         match cli.command {
             Command::Create(create) => assert!(create.no_install),
             other => panic!("expected create command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_login_json() {
+        let cli = Cli::try_parse_from(["ling", "login", "--api-key", "test-key", "--json"])
+            .expect("parse login json");
+
+        match cli.command {
+            Command::Login(login) => {
+                assert_eq!(login.api_key.as_deref(), Some("test-key"));
+                assert!(login.json);
+            }
+            other => panic!("expected login command, got {other:?}"),
         }
     }
 

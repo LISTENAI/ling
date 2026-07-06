@@ -205,7 +205,9 @@ pub async fn deploy_command(ctx: &AgentContext, args: DeployArgs) -> Result<Exit
         .as_deref()
         .filter(|key| !key.trim().is_empty())
         .ok_or_else(|| {
-            anyhow!("API key not set - provide --api-key, run `ling login`, or set LING_API_KEY")
+            anyhow!(
+                "API key not set - open https://platform.listenai.com/keys, then provide --api-key, run `ling login`, or set LING_API_KEY"
+            )
         })?;
     let bundle = fs::read(&opts.bundle)
         .with_context(|| format!("read bundle: {}", opts.bundle.display()))?;
@@ -1074,7 +1076,9 @@ fn choose_deploy_api_key(
         }
     }
 
-    bail!("API key not set - provide --api-key, run `ling login`, or set LING_API_KEY")
+    bail!(
+        "API key not set - open https://platform.listenai.com/keys, then provide --api-key, run `ling login`, or set LING_API_KEY"
+    )
 }
 
 fn framework_sdk_api_key(ctx: &AgentContext) -> Option<String> {

@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use std::io::{self, Write};
 
-const API_KEY_PROMPT: &str = "请输入 platform.listenai.com/keys 页面里的 API Key: ";
+const API_KEY_PROMPT: &str =
+    "请打开 https://platform.listenai.com/keys 获取 API Key，然后粘贴到这里: ";
 
 pub fn prompt_api_key() -> Result<String> {
     platform::prompt_api_key()
