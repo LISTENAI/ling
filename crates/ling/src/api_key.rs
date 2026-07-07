@@ -109,6 +109,12 @@ mod tests {
     }
 
     #[test]
+    fn builds_authorization_bearer_header() {
+        assert_eq!(bearer("abc"), "Bearer abc");
+        assert_eq!(bearer("  Bearer abc  "), "Bearer abc");
+    }
+
+    #[test]
     fn previews_api_keys_without_leaking_full_value() {
         assert_eq!(
             preview_key("12345678-abcdefg-87654321"),

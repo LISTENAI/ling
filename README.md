@@ -143,7 +143,7 @@ docker compose run --rm dev cargo build --release
 
 ```bash
 make fmt
-make test
+make test  # 只运行单元测试
 make lint
 make build
 ```

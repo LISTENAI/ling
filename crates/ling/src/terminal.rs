@@ -64,3 +64,13 @@ impl Drop for TerminalEncoding {
         }
     }
 }
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn init_is_noop_guard_on_non_windows() {
+        let _guard = init();
+    }
+}

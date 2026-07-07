@@ -2,6 +2,8 @@ mod api_key;
 mod config;
 mod secret_prompt;
 mod terminal;
+#[cfg(test)]
+mod test_support;
 mod v1_api;
 
 use anyhow::Result;
@@ -412,7 +414,9 @@ fn resolve_optional_api_key() -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{temp_path, EnvGuard};
     use clap::{CommandFactory, Parser};
+    use std::fs;
 
     #[test]
     fn parses_build_defaults() {
@@ -479,6 +483,155 @@ mod tests {
             }
             other => panic!("expected login command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_chat_options() {
+        let cli = Cli::try_parse_from([
+            "ling",
+            "chat",
+            "hello",
+            "world",
+            "--model",
+            "doubao-test",
+            "--system",
+            "be concise",
+            "--temperature",
+            "0.2",
+            "--top-p",
+            "0.8",
+            "--max-tokens",
+            "128",
+        ])
+        .expect("parse chat options");
+
+        match cli.command {
+            Command::Chat(chat) => {
+                assert_eq!(chat.prompt, vec!["hello", "world"]);
+                assert_eq!(chat.model, "doubao-test");
+                assert_eq!(chat.system.as_deref(), Some("be concise"));
+                assert_eq!(chat.temperature, Some(0.2));
+                assert_eq!(chat.top_p, Some(0.8));
+                assert_eq!(chat.max_tokens, Some(128));
+            }
+            other => panic!("expected chat command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chat_stream_conflicts_with_json() {
+        let err = Cli::try_parse_from(["ling", "chat", "hello", "--stream", "--json"])
+            .expect_err("stream and json should conflict");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn parses_app_list_options() {
+        let cli = Cli::try_parse_from([
+            "ling",
+            "app",
+            "list",
+            "--page",
+            "2",
+            "--page-size",
+            "50",
+            "--service-type",
+            "device",
+            "--json",
+        ])
+        .expect("parse app list");
+
+        match cli.command {
+            Command::App(args) => match args.command {
+                AppCommand::List {
+                    page,
+                    page_size,
+                    service_type,
+                    json,
+                } => {
+                    assert_eq!(page, 2);
+                    assert_eq!(page_size, 50);
+                    assert_eq!(service_type.as_deref(), Some("device"));
+                    assert!(json);
+                }
+                other => panic!("expected app list command, got {other:?}"),
+            },
+            other => panic!("expected app command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn app_service_type_rejects_unknown_value() {
+        let err = Cli::try_parse_from(["ling", "app", "list", "--service-type", "unknown"])
+            .expect_err("unknown service type should fail");
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn parses_wiki_search_keywords() {
+        let cli = Cli::try_parse_from(["ling", "wiki", "search", "--json", "标准API", "密钥"])
+            .expect("parse wiki search");
+
+        match cli.command {
+            Command::Wiki(args) => match args.command {
+                WikiCommand::Search { keywords, json } => {
+                    assert_eq!(keywords, vec!["标准API", "密钥"]);
+                    assert!(json);
+                }
+            },
+            other => panic!("expected wiki command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolves_api_key_from_env_before_config() {
+        let guard = EnvGuard::new(&["LING_API_KEY", "LING_CONFIG"]);
+        let dir = temp_path("ling-resolve-env-test");
+        let config_path = dir.join("config.json");
+        guard.set_var("LING_CONFIG", &config_path);
+        config::LingConfig {
+            api_key: Some("saved-key".to_owned()),
+        }
+        .save()
+        .expect("save config");
+
+        guard.set_var("LING_API_KEY", "Bearer env-key");
+
+        assert_eq!(
+            resolve_optional_api_key().unwrap().as_deref(),
+            Some("env-key")
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolves_api_key_from_saved_config() {
+        let guard = EnvGuard::new(&["LING_API_KEY", "LING_CONFIG"]);
+        let dir = temp_path("ling-resolve-config-test");
+        let config_path = dir.join("nested").join("config.json");
+        guard.set_var("LING_CONFIG", &config_path);
+        config::LingConfig {
+            api_key: Some("Bearer saved-key".to_owned()),
+        }
+        .save()
+        .expect("save config");
+
+        assert_eq!(
+            resolve_optional_api_key().unwrap().as_deref(),
+            Some("saved-key")
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolve_api_key_reports_missing_credentials() {
+        let guard = EnvGuard::new(&["LING_API_KEY", "LING_CONFIG"]);
+        let config_path = temp_path("ling-resolve-missing-test").join("config.json");
+        guard.set_var("LING_CONFIG", &config_path);
+
+        let err = resolve_api_key().expect_err("missing key should fail");
+
+        assert!(format!("{err:?}").contains("未找到 API Key"));
     }
 
     #[test]
