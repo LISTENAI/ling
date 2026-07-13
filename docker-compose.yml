@@ -14,8 +14,6 @@ services:
       - LING_API_KEY
       - LING_CONFIG
       - LING_API_BASE_URL
-      - LING_DOCS_GRAPHQL_URL
-      - LING_DOCS_BASE_URL
     command: sleep infinity
 
   test:

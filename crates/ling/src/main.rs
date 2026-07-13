@@ -10,6 +10,8 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use std::process::ExitCode;
 
+const DOCS_BASE_URL: &str = "https://docs2.listenai.com";
+
 #[derive(Debug, Parser)]
 #[command(name = "ling", version, about = "ListenAI local CLI")]
 struct Cli {
@@ -19,20 +21,6 @@ struct Cli {
         default_value = "https://api.listenai.com"
     )]
     api_base_url: String,
-
-    #[arg(
-        long,
-        env = "LING_DOCS_GRAPHQL_URL",
-        default_value = "https://docs2.listenai.com/graphql"
-    )]
-    docs_graphql_url: String,
-
-    #[arg(
-        long,
-        env = "LING_DOCS_BASE_URL",
-        default_value = "https://docs2.listenai.com"
-    )]
-    docs_base_url: String,
 
     #[command(subcommand)]
     command: Command,
@@ -234,7 +222,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Wiki(args) => {
-            wiki_command(cli.docs_graphql_url, cli.docs_base_url, args).await?;
+            wiki_command(args).await?;
             Ok(ExitCode::SUCCESS)
         }
     }
@@ -352,11 +340,7 @@ async fn app_command(api_base_url: String, args: AppArgs) -> Result<()> {
         }
     }
 }
-async fn wiki_command(
-    docs_graphql_url: String,
-    docs_base_url: String,
-    args: WikiArgs,
-) -> Result<()> {
+async fn wiki_command(args: WikiArgs) -> Result<()> {
     match args.command {
         WikiCommand::Search { keywords, json } => {
             let keyword_count = keywords
@@ -364,18 +348,14 @@ async fn wiki_command(
                 .filter(|keyword| !keyword.trim().is_empty())
                 .count();
             if json {
-                let output =
-                    ling_plugin_wiki::search(&docs_graphql_url, &docs_base_url, &keywords).await?;
+                let output = ling_plugin_wiki::search(DOCS_BASE_URL, &keywords).await?;
                 print_json(&output)
             } else if keyword_count > 1 {
-                let groups =
-                    ling_plugin_wiki::search_grouped(&docs_graphql_url, &docs_base_url, &keywords)
-                        .await?;
+                let groups = ling_plugin_wiki::search_grouped(DOCS_BASE_URL, &keywords).await?;
                 println!("{}", ling_plugin_wiki::render_search_groups(&groups));
                 Ok(())
             } else {
-                let output =
-                    ling_plugin_wiki::search(&docs_graphql_url, &docs_base_url, &keywords).await?;
+                let output = ling_plugin_wiki::search(DOCS_BASE_URL, &keywords).await?;
                 println!("{}", ling_plugin_wiki::render_search_results(&output));
                 Ok(())
             }
@@ -640,5 +620,7 @@ mod tests {
         assert!(help.contains("create"));
         assert!(help.contains("build"));
         assert!(help.contains("deploy"));
+        assert!(!help.contains("--docs-graphql-url"));
+        assert!(!help.contains("--docs-base-url"));
     }
 }
