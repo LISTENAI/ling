@@ -278,6 +278,9 @@ enum AppCommand {
         /// Target mode. Omit to show the current mode.
         #[arg(value_parser = ["oneshot", "half-duplex", "full-duplex"])]
         mode: Option<String>,
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
     },
     /// App-linked knowledge bases.
     Kb(AppKbArgs),
@@ -330,11 +333,19 @@ enum DeviceCommand {
     /// Import a device id.
     Add { device_id: String },
     /// Check whether a device id is authorized.
-    Query { device_id: String },
+    Query {
+        device_id: String,
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show or toggle whitelist enforcement.
     Enforce {
         #[arg(value_parser = ["on", "off"])]
         state: Option<String>,
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -675,7 +686,7 @@ async fn login(api_base_url: String, args: LoginArgs) -> Result<()> {
     if args.json {
         print_json(&output)
     } else {
-        println!("{}", api_key::render_login_success(&output, &api_base_url));
+        eprintln!("{}", api_key::render_login_success(&output, &api_base_url));
         Ok(())
     }
 }
@@ -903,13 +914,17 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
             return Err(platform_write_unavailable(feature));
         }
         AppCommand::Role(args) => role_command(cli, args, product).await?,
-        AppCommand::InteractMode { mode } => match mode {
+        AppCommand::InteractMode { mode, json } => match mode {
             None => {
                 let detail = fetch_project_detail(cli, product).await?;
-                println!(
-                    "{}",
-                    ling_plugin_app::config_view::render_interact_mode(&detail)?
-                );
+                if json {
+                    print_json(&config_fragment(&detail, "/interaction_mode"))?;
+                } else {
+                    println!(
+                        "{}",
+                        ling_plugin_app::config_view::render_interact_mode(&detail)?
+                    );
+                }
             }
             Some(_) => return Err(platform_write_unavailable("设置交互模式")),
         },
@@ -969,13 +984,13 @@ async fn init_command(cli: &Ctx, args: InitArgs, product: Option<String>) -> Res
     match product_id {
         Some(product_id) => {
             ling_plugin_app_project::project::write_product_id(&project_dir, &product_id)?;
-            println!(
+            eprintln!(
                 "已关联应用 product_id={product_id}（写入 {}）",
                 ling_plugin_app_project::project::manifest_path(&project_dir).display()
             );
         }
         None => {
-            println!(
+            eprintln!(
                 "未关联平台应用。可稍后在 {} 中设置 product_id，或重新运行 `ling app init`。",
                 ling_plugin_app_project::project::manifest_path(&project_dir).display()
             );
@@ -986,7 +1001,7 @@ async fn init_command(cli: &Ctx, args: InitArgs, product: Option<String>) -> Res
 
 /// 交互式选择一个平台应用；非交互环境或无 API Key 时返回 None。
 async fn select_product_interactively(cli: &Ctx) -> Result<Option<String>> {
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         eprintln!("非交互环境，跳过应用关联（可用 --product-id 指定）。");
         return Ok(None);
     }
@@ -1006,9 +1021,9 @@ async fn select_product_interactively(cli: &Ctx) -> Result<Option<String>> {
         return Ok(None);
     }
 
-    println!("选择要关联的平台应用：");
+    eprintln!("选择要关联的平台应用：");
     for (index, project) in projects.iter().enumerate() {
-        println!(
+        eprintln!(
             "  {}. {} ({})",
             index + 1,
             project.get("name").and_then(Value::as_str).unwrap_or("-"),
@@ -1018,8 +1033,8 @@ async fn select_product_interactively(cli: &Ctx) -> Result<Option<String>> {
                 .unwrap_or("-")
         );
     }
-    print!("输入编号（回车跳过）: ");
-    io::stdout().flush()?;
+    eprint!("输入编号（回车跳过）: ");
+    io::stderr().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     let input = input.trim();
@@ -1125,12 +1140,16 @@ async fn device_command(cli: &Ctx, args: DeviceArgs, product: Option<String>) ->
                 println!("{}", config_view::render_device_quota(&detail)?);
             }
         }
-        DeviceCommand::Query { device_id } => {
+        DeviceCommand::Query { device_id, json } => {
             let api_key = resolve_api_key()?;
             let product_id = resolve_product_id(product)?;
             let output =
                 ling_plugin_app::device_query(&cli.api_base_url, &api_key, &product_id, &device_id)
                     .await?;
+            if json {
+                print_json(&output)?;
+                return Ok(());
+            }
             let valid = output
                 .get("is_valid")
                 .and_then(Value::as_bool)
@@ -1141,13 +1160,23 @@ async fn device_command(cli: &Ctx, args: DeviceArgs, product: Option<String>) ->
                 println!("设备 {device_id} 未授权（is_valid=false）。");
             }
         }
-        DeviceCommand::Enforce { state } => match state {
+        DeviceCommand::Enforce { state, json } => match state {
             None => {
                 let detail = fetch_project_detail(cli, product).await?;
-                match config_view::device_auth_check(&detail) {
-                    Some(true) => println!("强制白名单模式：开启"),
-                    Some(false) => println!("强制白名单模式：关闭"),
-                    None => println!("强制白名单模式：未知"),
+                if json {
+                    let product = config_view::project_data(&detail)
+                        .get("product")
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    print_json(&serde_json::json!({
+                        "deviceAuthCheck": product.get("deviceAuthCheck"),
+                    }))?;
+                } else {
+                    match config_view::device_auth_check(&detail) {
+                        Some(true) => println!("强制白名单模式：开启"),
+                        Some(false) => println!("强制白名单模式：关闭"),
+                        None => println!("强制白名单模式：未知"),
+                    }
                 }
             }
             Some(_) => return Err(platform_write_unavailable("切换强制白名单模式")),
@@ -1205,18 +1234,18 @@ async fn kb_command(api_base_url: &str, args: KbArgs) -> Result<()> {
                     .pointer("/data/index_id")
                     .and_then(Value::as_str)
                     .unwrap_or("-");
-                println!("已创建知识库「{name}」，index_id: {index_id}");
+                eprintln!("已创建知识库「{name}」，index_id: {index_id}");
                 Ok(())
             }
         }
         KbCommand::Delete { index_id, yes } => {
             if !yes && !confirm(&format!("确定删除知识库 {index_id} 吗？此操作不可恢复"))?
             {
-                println!("已取消。");
+                eprintln!("已取消。");
                 return Ok(());
             }
             ling_plugin_kb::delete(api_base_url, &api_key, &index_id).await?;
-            println!("已删除知识库 {index_id}。");
+            eprintln!("已删除知识库 {index_id}。");
             Ok(())
         }
         KbCommand::Doc { index_id, command } => match command {
@@ -1240,7 +1269,7 @@ async fn kb_command(api_base_url: &str, args: KbArgs) -> Result<()> {
             KbDocCommand::Delete { doc_ids } => {
                 ling_plugin_kb::delete_documents(api_base_url, &api_key, &index_id, &doc_ids)
                     .await?;
-                println!("已删除 {} 个文档。", doc_ids.len());
+                eprintln!("已删除 {} 个文档。", doc_ids.len());
                 Ok(())
             }
         },
@@ -1349,8 +1378,8 @@ fn confirm(message: &str) -> Result<bool> {
     if !io::stdin().is_terminal() {
         anyhow::bail!("非交互环境，请追加 --yes 确认执行");
     }
-    print!("{message} [y/N]: ");
-    io::stdout().flush()?;
+    eprint!("{message} [y/N]: ");
+    io::stderr().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     Ok(matches!(

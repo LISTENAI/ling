@@ -175,7 +175,7 @@ pub async fn build_command(ctx: &AgentContext, args: BuildArgs) -> Result<ExitCo
     }
 
     let size = fs::metadata(&out).map(|st| st.len()).unwrap_or(0);
-    println!("built {} ({} bytes)", out.display(), size);
+    eprintln!("built {} ({} bytes)", out.display(), size);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -189,7 +189,7 @@ pub async fn deploy_command(ctx: &AgentContext, args: DeployArgs) -> Result<Exit
     let opts = resolve_deploy_options(ctx, args)?;
     validate_deploy_bundle(&opts.bundle)?;
 
-    println!(
+    eprintln!(
         "Deploying {} -> product:{} version:{} via {}",
         opts.bundle.display(),
         opts.product_id,
@@ -238,13 +238,13 @@ async fn scaffold_project(ctx: &AgentContext, name: &str, template: &str) -> Res
     }
 
     let sdk = fetch_required_latest_framework_sdk(ctx).await?;
-    println!("downloading Framework SDK {}...", sdk.version);
+    eprintln!("downloading Framework SDK {}...", sdk.version);
     let archive = download_framework_sdk_archive(ctx, &sdk).await?;
     let dest = PathBuf::from(name);
     extract_project_template_from_sdk_archive(&archive, template, &dest)?;
     normalize_scaffolded_project(&dest)?;
     write_agent_project_version(&dest.join(AGENT_PROJECT_VERSION_FILE), &sdk.version)?;
-    println!(
+    eprintln!(
         "created {} from template {}",
         dest.display(),
         display_template_name(template)
@@ -468,8 +468,8 @@ async fn prompt_agent_project_update(
         return Ok(());
     }
 
-    print!("{message}");
-    io::stdout().flush().context("flush update prompt")?;
+    eprint!("{message}");
+    io::stderr().flush().context("flush update prompt")?;
 
     let mut input = String::new();
     io::stdin()
@@ -478,11 +478,11 @@ async fn prompt_agent_project_update(
     match input.trim().to_ascii_lowercase().as_str() {
         "y" | "yes" => update_agent_project(ctx, project_dir, marker, latest).await,
         "n" | "no" | "" => {
-            println!("skip agent project update");
+            eprintln!("skip agent project update");
             Ok(())
         }
         _ => {
-            println!("skip agent project update");
+            eprintln!("skip agent project update");
             Ok(())
         }
     }
@@ -494,11 +494,11 @@ async fn update_agent_project(
     marker: &Path,
     latest: &FrameworkSdkRecord,
 ) -> Result<()> {
-    println!("downloading Framework SDK {}...", latest.version);
+    eprintln!("downloading Framework SDK {}...", latest.version);
     let archive = download_framework_sdk_archive(ctx, latest).await?;
     update_project_sdk_from_archive(&archive, project_dir)?;
     write_agent_project_version(marker, &latest.version)?;
-    println!("agent project SDK updated to {}", latest.version);
+    eprintln!("agent project SDK updated to {}", latest.version);
     Ok(())
 }
 
@@ -776,7 +776,7 @@ fn install_project_deps(project_dir: &Path) -> Result<()> {
         )
     })?;
 
-    println!("installing dependencies in {}...", project_dir.display());
+    eprintln!("installing dependencies in {}...", project_dir.display());
     let mut command = Command::new(&npm);
     set_command_path(&mut command, npm.as_os_str());
     let status = command
@@ -791,7 +791,7 @@ fn install_project_deps(project_dir: &Path) -> Result<()> {
             project_dir.display()
         );
     }
-    println!("dependencies installed");
+    eprintln!("dependencies installed");
     Ok(())
 }
 
@@ -950,8 +950,8 @@ fn run_dev() -> Result<ExitCode> {
         .with_context(|| format!("write dev harness: {}", harness.display()))?;
 
     let mut watch = spawn_esbuild_watch(&entry, &bundle)?;
-    println!("ling dev: watching {}", entry.display());
-    println!("Type a message and press ENTER to send a mock ASR final frame. Ctrl+C to exit.");
+    eprintln!("ling dev: watching {}", entry.display());
+    eprintln!("Type a message and press ENTER to send a mock ASR final frame. Ctrl+C to exit.");
 
     let status = Command::new(node)
         .arg(&harness)
@@ -1195,55 +1195,55 @@ async fn upload_agent_bundle(
 
 fn print_deploy_dry_run(opts: &DeployOptions) -> Result<()> {
     let url = agent_deploy_url(opts)?;
-    println!("Dry run - skipping upload.");
-    println!("URL: {url}");
+    eprintln!("Dry run - skipping upload.");
+    eprintln!("URL: {url}");
     print_deploy_metadata(opts);
     Ok(())
 }
 
 fn print_deploy_metadata(opts: &DeployOptions) {
-    println!("Bundle: {}", opts.bundle.display());
-    println!("Product/App ID: {}", opts.product_id);
-    println!("Version: {}", opts.version);
+    eprintln!("Bundle: {}", opts.bundle.display());
+    eprintln!("Product/App ID: {}", opts.product_id);
+    eprintln!("Version: {}", opts.version);
     if let Some(value) = &opts.version_name {
-        println!("Version name: {value}");
+        eprintln!("Version name: {value}");
     }
     if let Some(value) = &opts.description {
-        println!("Description: {value}");
+        eprintln!("Description: {value}");
     }
     if let Some(value) = &opts.sdk_version {
-        println!("SDK version: {value}");
+        eprintln!("SDK version: {value}");
     }
     if let Some(value) = &opts.published_by {
-        println!("Published by: {value}");
+        eprintln!("Published by: {value}");
     }
 }
 
 fn print_deploy_success(data: &DeployData) {
-    println!("Deploy succeeded.");
+    eprintln!("Deploy succeeded.");
     if !data.status.is_empty() {
-        println!("Status: {}", data.status);
+        eprintln!("Status: {}", data.status);
     }
     if !data.app_id.is_empty() {
-        println!("App ID: {}", data.app_id);
+        eprintln!("App ID: {}", data.app_id);
     }
     if !data.version.is_empty() {
-        println!("Version: {}", data.version);
+        eprintln!("Version: {}", data.version);
     }
     if !data.version_name.is_empty() {
-        println!("Version name: {}", data.version_name);
+        eprintln!("Version name: {}", data.version_name);
     }
     if !data.description.is_empty() {
-        println!("Description: {}", data.description);
+        eprintln!("Description: {}", data.description);
     }
     if data.file_size > 0 {
-        println!("File size: {} bytes", data.file_size);
+        eprintln!("File size: {} bytes", data.file_size);
     }
     if !data.file_hash.is_empty() {
-        println!("File hash: {}", data.file_hash);
+        eprintln!("File hash: {}", data.file_hash);
     }
     if !data.oss_bucket.is_empty() || !data.oss_path.is_empty() {
-        println!("OSS: {}/{}", data.oss_bucket, data.oss_path);
+        eprintln!("OSS: {}/{}", data.oss_bucket, data.oss_path);
     }
 }
 

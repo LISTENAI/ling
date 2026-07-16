@@ -195,15 +195,35 @@ pub async fn interaction_request(
     while let Some(message) = ws.next().await {
         match message {
             Ok(Message::Text(body)) => {
-                let action = serde_json::from_str::<Value>(&body).ok().and_then(|frame| {
-                    frame
-                        .get("action")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                });
+                let frame = serde_json::from_str::<Value>(&body).ok();
+                let action = frame
+                    .as_ref()
+                    .and_then(|frame| frame.get("action"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                let error_code = frame
+                    .as_ref()
+                    .and_then(|frame| frame.get("code"))
+                    .map(|code| {
+                        code.as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| code.to_string())
+                    });
+                let error_desc = frame
+                    .as_ref()
+                    .and_then(|frame| frame.get("desc"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 on_event(RequestEvent::Frame(body));
                 match action.as_deref() {
-                    Some("finish") | Some("error") => break,
+                    Some("finish") => break,
+                    Some("error") => {
+                        bail!(
+                            "链路请求失败：code={} {}",
+                            error_code.unwrap_or_else(|| "-".into()),
+                            error_desc.unwrap_or_else(|| "-".into())
+                        );
+                    }
                     _ => {}
                 }
             }
