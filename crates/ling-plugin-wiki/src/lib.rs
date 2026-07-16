@@ -72,16 +72,13 @@ struct PageSearchResult {
     locale: String,
 }
 
-pub async fn search(
-    graphql_url: &str,
-    docs_base_url: &str,
-    keywords: &[String],
-) -> Result<Vec<WikiSearchOutput>> {
+pub async fn search(docs_base_url: &str, keywords: &[String]) -> Result<Vec<WikiSearchOutput>> {
     if keywords.is_empty() {
         anyhow::bail!("请至少提供一个关键词，例如：ling wiki search 标准API 获取密钥");
     }
 
     let client = ling_core::client()?;
+    let graphql_url = graphql_url(docs_base_url);
     let mut merged: HashMap<String, MergedResult> = HashMap::new();
     let mut order = 0usize;
 
@@ -90,7 +87,7 @@ pub async fn search(
         if keyword.is_empty() {
             continue;
         }
-        let results = search_one(&client, graphql_url, keyword).await?;
+        let results = search_one(&client, &graphql_url, keyword).await?;
         for result in results {
             let key = if result.path.is_empty() {
                 result.id.clone()
@@ -123,7 +120,6 @@ pub async fn search(
 }
 
 pub async fn search_grouped(
-    graphql_url: &str,
     docs_base_url: &str,
     keywords: &[String],
 ) -> Result<Vec<WikiSearchGroup>> {
@@ -132,6 +128,7 @@ pub async fn search_grouped(
     }
 
     let client = ling_core::client()?;
+    let graphql_url = graphql_url(docs_base_url);
     let mut groups = Vec::new();
 
     for keyword in keywords {
@@ -140,7 +137,7 @@ pub async fn search_grouped(
             continue;
         }
 
-        let results = search_one(&client, graphql_url, keyword)
+        let results = search_one(&client, &graphql_url, keyword)
             .await?
             .into_iter()
             .map(|result| search_output(docs_base_url, &result))
@@ -282,6 +279,10 @@ fn docs_url(base_url: &str, locale: &str, path: &str) -> String {
     format!("{base_url}/{locale}/{path}")
 }
 
+fn graphql_url(base_url: &str) -> String {
+    format!("{}/graphql", base_url.trim_end_matches('/'))
+}
+
 fn encode_segment(segment: &str) -> String {
     utf8_percent_encode(segment, PATH_SEGMENT_ENCODE_SET).to_string()
 }
@@ -334,6 +335,14 @@ mod tests {
         assert_eq!(
             docs_url("https://docs2.listenai.com", "zh", "自定义MCP应用-基础教程"),
             "https://docs2.listenai.com/zh/%E8%87%AA%E5%AE%9A%E4%B9%89MCP%E5%BA%94%E7%94%A8-%E5%9F%BA%E7%A1%80%E6%95%99%E7%A8%8B"
+        );
+    }
+
+    #[test]
+    fn builds_graphql_url_from_docs_base_url() {
+        assert_eq!(
+            graphql_url("https://docs2.listenai.com/"),
+            "https://docs2.listenai.com/graphql"
         );
     }
 

@@ -205,7 +205,9 @@ pub async fn deploy_command(ctx: &AgentContext, args: DeployArgs) -> Result<Exit
         .as_deref()
         .filter(|key| !key.trim().is_empty())
         .ok_or_else(|| {
-            anyhow!("API key not set - provide --api-key, run `ling login`, or set LING_API_KEY")
+            anyhow!(
+                "API key not set - open https://platform.listenai.com/keys, then provide --api-key, run `ling login`, or set LING_API_KEY"
+            )
         })?;
     let bundle = fs::read(&opts.bundle)
         .with_context(|| format!("read bundle: {}", opts.bundle.display()))?;
@@ -844,7 +846,7 @@ fn spawn_esbuild_watch(entry: &Path, out: &Path) -> Result<Child> {
 fn prepare_build_inputs(entry: &Path, out: &Path) -> Result<()> {
     if !entry.exists() {
         bail!(
-            "entry not found: {} - run `ling create` first",
+            "entry not found: {} - run `ling app init` first",
             entry.display()
         );
     }
@@ -853,7 +855,7 @@ fn prepare_build_inputs(entry: &Path, out: &Path) -> Result<()> {
         .join("sdk/src/index.ts");
     if !sdk.exists() {
         bail!(
-            "local SDK not found: {} - run `ling create` or restore sdk/src/index.ts",
+            "local SDK not found: {} - run `ling app init` or restore sdk/src/index.ts",
             sdk.display()
         );
     }
@@ -942,13 +944,13 @@ fn run_dev() -> Result<ExitCode> {
     let entry = cwd.join("agent.ts");
     if !entry.exists() {
         bail!(
-            "agent.ts not found in {} - run `ling create` first",
+            "agent.ts not found in {} - run `ling app init` first",
             cwd.display()
         );
     }
 
     let node = find_on_path_candidates("node")
-        .ok_or_else(|| anyhow!("node not found. Install Node.js to use `ling dev`"))?;
+        .ok_or_else(|| anyhow!("node not found. Install Node.js to use `ling app dev`"))?;
     let tmp = temp_dir("ling-dev")?;
     let bundle = tmp.join("agent.js");
     let harness = tmp.join("dev-harness.cjs");
@@ -1026,7 +1028,7 @@ fn resolve_deploy_options(ctx: &AgentContext, args: DeployArgs) -> Result<Deploy
 fn validate_deploy_bundle(bundle: &Path) -> Result<()> {
     let st = fs::metadata(bundle).with_context(|| {
         format!(
-            "bundle not found: {} - run `ling build` first",
+            "bundle not found: {} - run `ling app build` first",
             bundle.display()
         )
     })?;
@@ -1074,7 +1076,9 @@ fn choose_deploy_api_key(
         }
     }
 
-    bail!("API key not set - provide --api-key, run `ling login`, or set LING_API_KEY")
+    bail!(
+        "API key not set - open https://platform.listenai.com/keys, then provide --api-key, run `ling login`, or set LING_API_KEY"
+    )
 }
 
 fn framework_sdk_api_key(ctx: &AgentContext) -> Option<String> {

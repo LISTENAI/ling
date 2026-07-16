@@ -88,7 +88,7 @@ pub fn render_account(value: &Value) -> Result<String> {
         .unwrap_or("-");
 
     Ok(format!(
-        "账号信息：\nID: {id}\n名称: {name}\n类型: {account_type}\n\n使用 --json 输出原始 JSON。"
+        "账号信息：\nID: {id}\n名称: {name}\n类型: {account_type}\n\n当前已登录。下一步可执行：\n- ling ai models\n- ling app list\n- ling app init <agent_name> --product-id <product_id>\n- ling app inspect <product_id> 后用 adb shell device set_pid/set_sid 切换设备 PID/SID\n\n使用 --json 输出原始 JSON。"
     ))
 }
 
@@ -287,6 +287,8 @@ mod tests {
         assert!(output.contains("ID: 123"));
         assert!(output.contains("名称: ListenAI"));
         assert!(output.contains("类型: developer"));
+        assert!(output.contains("当前已登录"));
+        assert!(output.contains("ling app inspect <product_id>"));
     }
 
     #[test]
@@ -307,6 +309,23 @@ mod tests {
     }
 
     #[test]
+    fn renders_empty_models_summary() {
+        let value = json!({ "data": [] });
+
+        assert_eq!(
+            render_models(&value).unwrap(),
+            "暂无可用模型。使用 --json 输出原始 JSON。"
+        );
+    }
+
+    #[test]
+    fn render_models_requires_data_array() {
+        let err = render_models(&json!({ "data": {} })).expect_err("data must be array");
+
+        assert!(format!("{err:?}").contains("models 响应缺少 data 数组"));
+    }
+
+    #[test]
     fn renders_chat_content() {
         let value = json!({
             "choices": [{
@@ -321,6 +340,29 @@ mod tests {
     }
 
     #[test]
+    fn renders_chat_content_from_parts_and_text_fallback() {
+        let value = json!({
+            "choices": [{
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "你"},
+                        {"content": "好"},
+                        {"type": "image_url", "image_url": {"url": "ignored"}}
+                    ]
+                }
+            }]
+        });
+        assert_eq!(render_chat_completion(&value).unwrap(), "你好");
+
+        let value = json!({
+            "choices": [{
+                "text": "fallback text"
+            }]
+        });
+        assert_eq!(render_chat_completion(&value).unwrap(), "fallback text");
+    }
+
+    #[test]
     fn extracts_stream_delta_text() {
         let value = json!({
             "choices": [{
@@ -331,6 +373,22 @@ mod tests {
         });
 
         assert_eq!(stream_delta_text(&value).unwrap(), "你好");
+    }
+
+    #[test]
+    fn extracts_stream_message_content_parts() {
+        let value = json!({
+            "choices": [{
+                "message": {
+                    "content": [
+                        {"text": "流"},
+                        {"content": "式"}
+                    ]
+                }
+            }]
+        });
+
+        assert_eq!(stream_delta_text(&value).unwrap(), "流式");
     }
 
     #[test]
@@ -352,5 +410,25 @@ mod tests {
         assert!((body["top_p"].as_f64().unwrap() - 0.9).abs() < 0.0001);
         assert_eq!(body["max_tokens"], 128);
         assert_eq!(body["messages"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn chat_body_omits_empty_system_and_can_force_stream() {
+        let request = ChatRequest {
+            model: "doubao-seed-1.6-flash".to_owned(),
+            prompt: "你好".to_owned(),
+            system: Some("".to_owned()),
+            stream: false,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+        };
+
+        let body = chat_body(&request, true);
+
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert!(body.get("temperature").is_none());
     }
 }

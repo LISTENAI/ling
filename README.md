@@ -91,7 +91,7 @@ irm https://raw.githubusercontent.com/LISTENAI/ling/main/install.ps1 | iex
 本地开发版本：
 
 ```bash
-cd /Users/zh/Projects/listenai/ling
+cd <ling-repo>
 make install
 ```
 
@@ -152,20 +152,26 @@ docker compose run --rm dev cargo build --release
 
 ```bash
 make fmt
-make test
+make test  # 只运行单元测试
 make lint
 make build
 ```
 
 ## 登录
 
-交互输入 API Key：
+交互输入 API Key。先打开 `https://platform.listenai.com/keys` 获取 API Key，再执行：
 
 ```bash
 ling login
 ```
 
-检测到粘贴事件后会立即显示脱敏预览，例如 `65785f8b...ab632ee2`，无需等回车；完整 key 不会回显。
+检测到粘贴事件后会立即显示脱敏预览，例如 `65785f8b...ab632ee2`，无需等回车；完整 key 不会回显。登录成功后，默认输出会展示当前 API Base URL、可用模型数量和下一步建议。
+
+如需机器读取登录结果，可输出 JSON：
+
+```bash
+ling login --json
+```
 
 通过参数或环境变量传入 `/keys` 页面 API Key：
 
@@ -175,6 +181,12 @@ LING_API_KEY='<api-key>' ling login
 ```
 
 默认配置保存到 `~/.config/listenai/ling/config.json`，也可以用 `LING_CONFIG` 覆盖配置文件路径。
+
+登录后建议先确认账号状态：
+
+```bash
+ling account
+```
 
 ## 环境切换
 
@@ -275,7 +287,7 @@ ling app build --release
 ling app dev
 ling app deploy --version v1.0.0 --dry-run              # product_id 取自 listenai.toml
 ling app deploy \
-  --product-id 2b108aff-3da2-479b-b1b9-88e58f8fad2d \
+  --product-id <product_id> \
   --version v1.0.0 \
   --version-name 首次发布 \
   --description 支持基础语音对话
@@ -341,6 +353,18 @@ ling kb doc <index_id> delete <doc_id>...
 ling kb query <index_id> 空调怎么开
 ling kb query <index_id> 空调怎么开 --limit 5 --threshold 0.3
 ```
+
+## 真实设备 PID/SID 切换
+
+切换真实设备 PID/SID 时，不需要拉取端侧项目，也不需要编译固件。先用 `ling` 获取产品密钥，再通过 `adb shell` 写入设备：
+
+```bash
+ling app inspect <product_id>
+adb shell device set_pid <product_id>
+adb shell device set_sid <product_secret>
+```
+
+其中 `ling app inspect <product_id>` 输出中的“产品 ID”作为 PID，“密钥”作为 SID。`<product_secret>` 属于敏感信息，不要贴到公开日志、截图或 issue 中。
 
 ## 文档中心搜索
 

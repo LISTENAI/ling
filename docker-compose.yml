@@ -14,8 +14,6 @@ services:
       - LING_API_KEY
       - LING_CONFIG
       - LING_API_BASE_URL
-      - LING_DOCS_GRAPHQL_URL
-      - LING_DOCS_BASE_URL
     command: sleep infinity
 
   test:
@@ -28,7 +26,7 @@ services:
       - cargo-registry:/usr/local/cargo/registry
       - cargo-git:/usr/local/cargo/git
       - target:/workspace/target
-    command: cargo test --workspace
+    command: cargo test --workspace --lib --bins --locked
 
   lint:
     build:

@@ -10,7 +10,7 @@ help:
 	@echo "Targets:"
 	@echo "  make install      Install ling to $(INSTALL_BIN_DIR)"
 	@echo "  make build        Build release binary"
-	@echo "  make test         Run workspace tests locally"
+	@echo "  make test         Run workspace unit tests locally"
 	@echo "  make lint         Run fmt check and clippy locally"
 	@echo "  make fmt          Format Rust code locally"
 	@echo "  make check        Run cargo check locally"
@@ -29,7 +29,7 @@ build:
 	$(CARGO) build --release -p $(PACKAGE)
 
 test:
-	$(CARGO) test --workspace
+	$(CARGO) test --workspace --lib --bins --locked
 
 lint:
 	$(CARGO) fmt --check
