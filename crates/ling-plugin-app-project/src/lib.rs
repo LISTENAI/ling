@@ -1,3 +1,5 @@
+pub mod project;
+
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use flate2::read::GzDecoder;
@@ -55,9 +57,10 @@ pub struct DeployArgs {
     /// Path to compiled JS bundle.
     #[arg(long, default_value = "dist/agent.js")]
     pub bundle: String,
-    /// Product ID or App ID to deploy to.
-    #[arg(long = "product-id")]
-    pub product_id: String,
+    /// Product ID or App ID to deploy to. Set by the caller (`ling app
+    /// --product-id`) or resolved from listenai.toml.
+    #[arg(skip)]
+    pub product_id: Option<String>,
     /// Platform API endpoint. Defaults to the ling API base URL.
     #[arg(long)]
     pub endpoint: Option<String>,
@@ -153,12 +156,13 @@ pub struct AgentContext {
     pub saved_api_key: Option<String>,
 }
 
-pub async fn create_command(ctx: &AgentContext, args: CreateArgs) -> Result<ExitCode> {
+/// 拉取最新 Base 项目模板并初始化本地工程，返回项目目录。
+pub async fn init_project(ctx: &AgentContext, args: &CreateArgs) -> Result<PathBuf> {
     let project_dir = scaffold_project(ctx, &args.name, &args.template).await?;
     if !args.no_install {
         install_project_deps(&project_dir)?;
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(project_dir)
 }
 
 pub async fn build_command(ctx: &AgentContext, args: BuildArgs) -> Result<ExitCode> {
@@ -171,7 +175,7 @@ pub async fn build_command(ctx: &AgentContext, args: BuildArgs) -> Result<ExitCo
     }
 
     let size = fs::metadata(&out).map(|st| st.len()).unwrap_or(0);
-    println!("built {} ({} bytes)", out.display(), size);
+    eprintln!("built {} ({} bytes)", out.display(), size);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -185,7 +189,7 @@ pub async fn deploy_command(ctx: &AgentContext, args: DeployArgs) -> Result<Exit
     let opts = resolve_deploy_options(ctx, args)?;
     validate_deploy_bundle(&opts.bundle)?;
 
-    println!(
+    eprintln!(
         "Deploying {} -> product:{} version:{} via {}",
         opts.bundle.display(),
         opts.product_id,
@@ -205,9 +209,7 @@ pub async fn deploy_command(ctx: &AgentContext, args: DeployArgs) -> Result<Exit
         .as_deref()
         .filter(|key| !key.trim().is_empty())
         .ok_or_else(|| {
-            anyhow!(
-                "API key not set - open https://platform.listenai.com/keys, then provide --api-key, run `ling login`, or set LING_API_KEY"
-            )
+            anyhow!("API key not set - provide --api-key, run `ling login`, or set LING_API_KEY")
         })?;
     let bundle = fs::read(&opts.bundle)
         .with_context(|| format!("read bundle: {}", opts.bundle.display()))?;
@@ -236,13 +238,13 @@ async fn scaffold_project(ctx: &AgentContext, name: &str, template: &str) -> Res
     }
 
     let sdk = fetch_required_latest_framework_sdk(ctx).await?;
-    println!("downloading Framework SDK {}...", sdk.version);
+    eprintln!("downloading Framework SDK {}...", sdk.version);
     let archive = download_framework_sdk_archive(ctx, &sdk).await?;
     let dest = PathBuf::from(name);
     extract_project_template_from_sdk_archive(&archive, template, &dest)?;
     normalize_scaffolded_project(&dest)?;
     write_agent_project_version(&dest.join(AGENT_PROJECT_VERSION_FILE), &sdk.version)?;
-    println!(
+    eprintln!(
         "created {} from template {}",
         dest.display(),
         display_template_name(template)
@@ -332,14 +334,9 @@ async fn fetch_required_latest_framework_sdk(ctx: &AgentContext) -> Result<Frame
 
 async fn fetch_latest_framework_sdk(ctx: &AgentContext) -> Result<Option<FrameworkSdkRecord>> {
     let url = framework_sdk_latest_url(ctx)?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .context("build HTTP client")?;
-    let mut request = client.get(url.clone()).header(
-        reqwest::header::USER_AGENT,
-        concat!("ling/", env!("CARGO_PKG_VERSION")),
-    );
+    let client =
+        ling_core::client_with_timeout(Duration::from_secs(30)).context("build HTTP client")?;
+    let mut request = client.get(url.clone());
     if let Some(api_key) = framework_sdk_api_key(ctx) {
         request = request.bearer_auth(api_key);
     }
@@ -416,14 +413,9 @@ async fn download_framework_sdk_archive(
 ) -> Result<Vec<u8>> {
     let url = Url::parse(sdk.sdk.trim())
         .with_context(|| format!("invalid Framework SDK URL: {}", sdk.sdk))?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .context("build HTTP client")?;
-    let mut request = client.get(url.clone()).header(
-        reqwest::header::USER_AGENT,
-        concat!("ling/", env!("CARGO_PKG_VERSION")),
-    );
+    let client =
+        ling_core::client_with_timeout(Duration::from_secs(120)).context("build HTTP client")?;
+    let mut request = client.get(url.clone());
     if let Some(api_key) = framework_sdk_api_key(ctx) {
         request = request.bearer_auth(api_key);
     }
@@ -476,8 +468,8 @@ async fn prompt_agent_project_update(
         return Ok(());
     }
 
-    print!("{message}");
-    io::stdout().flush().context("flush update prompt")?;
+    eprint!("{message}");
+    io::stderr().flush().context("flush update prompt")?;
 
     let mut input = String::new();
     io::stdin()
@@ -486,11 +478,11 @@ async fn prompt_agent_project_update(
     match input.trim().to_ascii_lowercase().as_str() {
         "y" | "yes" => update_agent_project(ctx, project_dir, marker, latest).await,
         "n" | "no" | "" => {
-            println!("skip agent project update");
+            eprintln!("skip agent project update");
             Ok(())
         }
         _ => {
-            println!("skip agent project update");
+            eprintln!("skip agent project update");
             Ok(())
         }
     }
@@ -502,11 +494,11 @@ async fn update_agent_project(
     marker: &Path,
     latest: &FrameworkSdkRecord,
 ) -> Result<()> {
-    println!("downloading Framework SDK {}...", latest.version);
+    eprintln!("downloading Framework SDK {}...", latest.version);
     let archive = download_framework_sdk_archive(ctx, latest).await?;
     update_project_sdk_from_archive(&archive, project_dir)?;
     write_agent_project_version(marker, &latest.version)?;
-    println!("agent project SDK updated to {}", latest.version);
+    eprintln!("agent project SDK updated to {}", latest.version);
     Ok(())
 }
 
@@ -784,7 +776,7 @@ fn install_project_deps(project_dir: &Path) -> Result<()> {
         )
     })?;
 
-    println!("installing dependencies in {}...", project_dir.display());
+    eprintln!("installing dependencies in {}...", project_dir.display());
     let mut command = Command::new(&npm);
     set_command_path(&mut command, npm.as_os_str());
     let status = command
@@ -799,7 +791,7 @@ fn install_project_deps(project_dir: &Path) -> Result<()> {
             project_dir.display()
         );
     }
-    println!("dependencies installed");
+    eprintln!("dependencies installed");
     Ok(())
 }
 
@@ -958,8 +950,8 @@ fn run_dev() -> Result<ExitCode> {
         .with_context(|| format!("write dev harness: {}", harness.display()))?;
 
     let mut watch = spawn_esbuild_watch(&entry, &bundle)?;
-    println!("ling dev: watching {}", entry.display());
-    println!("Type a message and press ENTER to send a mock ASR final frame. Ctrl+C to exit.");
+    eprintln!("ling dev: watching {}", entry.display());
+    eprintln!("Type a message and press ENTER to send a mock ASR final frame. Ctrl+C to exit.");
 
     let status = Command::new(node)
         .arg(&harness)
@@ -982,10 +974,22 @@ fn run_dev() -> Result<ExitCode> {
 }
 
 fn resolve_deploy_options(ctx: &AgentContext, args: DeployArgs) -> Result<DeployOptions> {
-    let product_id = args.product_id.trim().to_string();
-    if product_id.is_empty() {
-        bail!("product-id required");
-    }
+    let product_id = args
+        .product_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            env::current_dir()
+                .ok()
+                .and_then(|cwd| project::read_product_id(&cwd))
+        });
+    let Some(product_id) = product_id else {
+        bail!(
+            "product-id required: pass --product-id, or run inside a project with product_id in listenai.toml (see `ling app init`)"
+        );
+    };
 
     let endpoint = args
         .endpoint
@@ -1070,15 +1074,13 @@ fn choose_deploy_api_key(
     .into_iter()
     .flatten()
     {
-        let key = strip_bearer(&candidate);
+        let key = ling_core::strip_bearer(&candidate);
         if !key.trim().is_empty() {
             return Ok(key);
         }
     }
 
-    bail!(
-        "API key not set - open https://platform.listenai.com/keys, then provide --api-key, run `ling login`, or set LING_API_KEY"
-    )
+    bail!("API key not set - provide --api-key, run `ling login`, or set LING_API_KEY")
 }
 
 fn framework_sdk_api_key(ctx: &AgentContext) -> Option<String> {
@@ -1089,15 +1091,6 @@ fn framework_sdk_api_key(ctx: &AgentContext) -> Option<String> {
         env::var("LISTENAI_API_KEY").ok(),
     )
     .ok()
-}
-
-fn strip_bearer(api_key: &str) -> String {
-    let api_key = api_key.trim();
-    if api_key.to_ascii_lowercase().starts_with("bearer ") {
-        api_key[7..].trim().to_owned()
-    } else {
-        api_key.to_owned()
-    }
 }
 
 fn resolve_deploy_version(version: &str) -> Result<String> {
@@ -1166,18 +1159,12 @@ async fn upload_agent_bundle(
     bundle: Vec<u8>,
 ) -> Result<DeployResponse> {
     let url = agent_deploy_url(opts)?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
-        .context("build HTTP client")?;
+    let client =
+        ling_core::client_with_timeout(Duration::from_secs(60)).context("build HTTP client")?;
     let response = client
         .put(url.clone())
         .bearer_auth(api_key.trim())
         .header(reqwest::header::CONTENT_TYPE, "application/javascript")
-        .header(
-            reqwest::header::USER_AGENT,
-            concat!("ling/", env!("CARGO_PKG_VERSION")),
-        )
         .body(bundle)
         .send()
         .await
@@ -1208,55 +1195,55 @@ async fn upload_agent_bundle(
 
 fn print_deploy_dry_run(opts: &DeployOptions) -> Result<()> {
     let url = agent_deploy_url(opts)?;
-    println!("Dry run - skipping upload.");
-    println!("URL: {url}");
+    eprintln!("Dry run - skipping upload.");
+    eprintln!("URL: {url}");
     print_deploy_metadata(opts);
     Ok(())
 }
 
 fn print_deploy_metadata(opts: &DeployOptions) {
-    println!("Bundle: {}", opts.bundle.display());
-    println!("Product/App ID: {}", opts.product_id);
-    println!("Version: {}", opts.version);
+    eprintln!("Bundle: {}", opts.bundle.display());
+    eprintln!("Product/App ID: {}", opts.product_id);
+    eprintln!("Version: {}", opts.version);
     if let Some(value) = &opts.version_name {
-        println!("Version name: {value}");
+        eprintln!("Version name: {value}");
     }
     if let Some(value) = &opts.description {
-        println!("Description: {value}");
+        eprintln!("Description: {value}");
     }
     if let Some(value) = &opts.sdk_version {
-        println!("SDK version: {value}");
+        eprintln!("SDK version: {value}");
     }
     if let Some(value) = &opts.published_by {
-        println!("Published by: {value}");
+        eprintln!("Published by: {value}");
     }
 }
 
 fn print_deploy_success(data: &DeployData) {
-    println!("Deploy succeeded.");
+    eprintln!("Deploy succeeded.");
     if !data.status.is_empty() {
-        println!("Status: {}", data.status);
+        eprintln!("Status: {}", data.status);
     }
     if !data.app_id.is_empty() {
-        println!("App ID: {}", data.app_id);
+        eprintln!("App ID: {}", data.app_id);
     }
     if !data.version.is_empty() {
-        println!("Version: {}", data.version);
+        eprintln!("Version: {}", data.version);
     }
     if !data.version_name.is_empty() {
-        println!("Version name: {}", data.version_name);
+        eprintln!("Version name: {}", data.version_name);
     }
     if !data.description.is_empty() {
-        println!("Description: {}", data.description);
+        eprintln!("Description: {}", data.description);
     }
     if data.file_size > 0 {
-        println!("File size: {} bytes", data.file_size);
+        eprintln!("File size: {} bytes", data.file_size);
     }
     if !data.file_hash.is_empty() {
-        println!("File hash: {}", data.file_hash);
+        eprintln!("File hash: {}", data.file_hash);
     }
     if !data.oss_bucket.is_empty() || !data.oss_path.is_empty() {
-        println!("OSS: {}/{}", data.oss_bucket, data.oss_path);
+        eprintln!("OSS: {}/{}", data.oss_bucket, data.oss_path);
     }
 }
 
@@ -1673,7 +1660,7 @@ mod tests {
             },
             DeployArgs {
                 bundle: "dist/agent.js".to_string(),
-                product_id: "prod_dev_local".to_string(),
+                product_id: Some("prod_dev_local".to_string()),
                 endpoint: None,
                 api_key: None,
                 version: Some("0.2.0".to_string()),

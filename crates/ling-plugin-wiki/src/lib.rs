@@ -77,9 +77,7 @@ pub async fn search(docs_base_url: &str, keywords: &[String]) -> Result<Vec<Wiki
         anyhow::bail!("请至少提供一个关键词，例如：ling wiki search 标准API 获取密钥");
     }
 
-    let client = Client::builder()
-        .user_agent(concat!("ling/", env!("CARGO_PKG_VERSION")))
-        .build()?;
+    let client = ling_core::client()?;
     let graphql_url = graphql_url(docs_base_url);
     let mut merged: HashMap<String, MergedResult> = HashMap::new();
     let mut order = 0usize;
@@ -129,9 +127,7 @@ pub async fn search_grouped(
         anyhow::bail!("请至少提供一个关键词，例如：ling wiki search 标准API 获取密钥");
     }
 
-    let client = Client::builder()
-        .user_agent(concat!("ling/", env!("CARGO_PKG_VERSION")))
-        .build()?;
+    let client = ling_core::client()?;
     let graphql_url = graphql_url(docs_base_url);
     let mut groups = Vec::new();
 

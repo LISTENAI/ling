@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use reqwest::{Client, StatusCode, Url};
+use reqwest::StatusCode;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -22,10 +22,8 @@ pub async fn login_with_api_key(api_base_url: &str, api_key: &str) -> Result<Log
 }
 
 async fn validate_api_key(api_base_url: &str, api_key: &str) -> Result<usize> {
-    let url = api_url(api_base_url, "/v1/models")?;
-    let response = Client::builder()
-        .user_agent(concat!("ling/", env!("CARGO_PKG_VERSION")))
-        .build()?
+    let url = ling_core::http_url(api_base_url, "/v1/models")?;
+    let response = ling_core::client()?
         .get(url)
         .header("authorization", bearer(api_key))
         .send()
@@ -50,32 +48,14 @@ async fn validate_api_key(api_base_url: &str, api_key: &str) -> Result<usize> {
     Ok(models.len())
 }
 
+pub use ling_core::{bearer, strip_bearer};
+
 pub fn render_login_success(output: &LoginOutput, api_base_url: &str) -> String {
     format!(
-        "登录成功。\nAPI Key: {api_key}\nAPI Base URL: {api_base_url}\n可用模型: {model_count} 个\n\n下一步：\n- 查看账号：ling account\n- 查看模型：ling models\n- 查看应用：ling app list\n- 创建 Agent：ling create <agent_name>\n- 切换设备 PID/SID：ling app inspect <product_id> 后执行 adb shell device set_pid/set_sid\n\n使用 `ling login --json` 输出原始 JSON。",
+        "登录成功。\nAPI Key: {api_key}\nAPI Base URL: {api_base_url}\n可用模型: {model_count} 个\n\n下一步：\n- 查看账号：ling account\n- 查看模型：ling ai models\n- 查看应用：ling app list\n- 初始化 Agent：ling app init <agent_name> --product-id <product_id>\n- 切换设备 PID/SID：ling app inspect <product_id> 后执行 adb shell device set_pid/set_sid\n\n使用 `ling login --json` 输出原始 JSON。",
         api_key = output.api_key_preview,
         model_count = output.model_count
     )
-}
-
-fn api_url(api_base_url: &str, path: &str) -> Result<Url> {
-    let base_url = Url::parse(api_base_url).context("LING_API_BASE_URL 不是合法 URL")?;
-    base_url
-        .join(path.trim_start_matches('/'))
-        .context("接口 URL 拼接失败")
-}
-
-pub fn strip_bearer(api_key: &str) -> String {
-    let api_key = api_key.trim();
-    if api_key.to_ascii_lowercase().starts_with("bearer ") {
-        api_key[7..].trim().to_owned()
-    } else {
-        api_key.to_owned()
-    }
-}
-
-pub fn bearer(api_key: &str) -> String {
-    format!("Bearer {}", strip_bearer(api_key))
 }
 
 pub fn preview_key(api_key: &str) -> String {

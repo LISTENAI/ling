@@ -1,6 +1,6 @@
 use crate::api_key;
 use anyhow::{Context, Result};
-use reqwest::{Client, StatusCode, Url};
+use reqwest::StatusCode;
 use serde_json::{json, Map, Value};
 use std::io::{self, Write};
 
@@ -36,11 +36,8 @@ pub async fn chat_completion_stream(
     api_key: &str,
     request: &ChatRequest,
 ) -> Result<()> {
-    let url = api_url(api_base_url, "/v1/chat/completions")?;
-    let client = Client::builder()
-        .user_agent(concat!("ling/", env!("CARGO_PKG_VERSION")))
-        .build()?;
-    let mut response = client
+    let url = ling_core::http_url(api_base_url, "/v1/chat/completions")?;
+    let mut response = ling_core::client()?
         .post(url)
         .header("authorization", api_key::bearer(api_key))
         .json(&chat_body(request, true))
@@ -91,7 +88,7 @@ pub fn render_account(value: &Value) -> Result<String> {
         .unwrap_or("-");
 
     Ok(format!(
-        "账号信息：\nID: {id}\n名称: {name}\n类型: {account_type}\n\n当前已登录。下一步可执行：\n- ling models\n- ling app list\n- ling create <agent_name>\n- ling app inspect <product_id> 后用 adb shell device set_pid/set_sid 切换设备 PID/SID\n\n使用 --json 输出原始 JSON。"
+        "账号信息：\nID: {id}\n名称: {name}\n类型: {account_type}\n\n当前已登录。下一步可执行：\n- ling ai models\n- ling app list\n- ling app init <agent_name> --product-id <product_id>\n- ling app inspect <product_id> 后用 adb shell device set_pid/set_sid 切换设备 PID/SID\n\n使用 --json 输出原始 JSON。"
     ))
 }
 
@@ -199,10 +196,8 @@ fn content_value_to_text(value: &Value) -> Option<String> {
 }
 
 async fn get_json(api_base_url: &str, api_key: &str, path: &str) -> Result<Value> {
-    let url = api_url(api_base_url, path)?;
-    let response = Client::builder()
-        .user_agent(concat!("ling/", env!("CARGO_PKG_VERSION")))
-        .build()?
+    let url = ling_core::http_url(api_base_url, path)?;
+    let response = ling_core::client()?
         .get(url)
         .header("authorization", api_key::bearer(api_key))
         .send()
@@ -212,10 +207,8 @@ async fn get_json(api_base_url: &str, api_key: &str, path: &str) -> Result<Value
 }
 
 async fn post_chat(api_base_url: &str, api_key: &str, request: &ChatRequest) -> Result<Value> {
-    let url = api_url(api_base_url, "/v1/chat/completions")?;
-    let response = Client::builder()
-        .user_agent(concat!("ling/", env!("CARGO_PKG_VERSION")))
-        .build()?
+    let url = ling_core::http_url(api_base_url, "/v1/chat/completions")?;
+    let response = ling_core::client()?
         .post(url)
         .header("authorization", api_key::bearer(api_key))
         .json(&chat_body(request, false))
@@ -275,13 +268,6 @@ fn chat_messages(request: &ChatRequest) -> Vec<Value> {
         "content": request.prompt
     }));
     messages
-}
-
-fn api_url(api_base_url: &str, path: &str) -> Result<Url> {
-    let base_url = Url::parse(api_base_url).context("LING_API_BASE_URL 不是合法 URL")?;
-    base_url
-        .join(path.trim_start_matches('/'))
-        .context("接口 URL 拼接失败")
 }
 
 #[cfg(test)]

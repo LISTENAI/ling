@@ -23,7 +23,7 @@
    ling account
    ```
 
-5. 告诉用户下一步可以执行：`ling models`、`ling app list`、`ling create <agent_name>`、或设备 PID/SID 切换流程。
+5. 告诉用户下一步可以执行：`ling ai models`、`ling app list`、`ling app init <agent_name> --product-id <product_id>`、或设备 PID/SID 切换流程。
 
 不要在回复、日志或截图中展示完整 API Key。
 
@@ -47,33 +47,36 @@
 新建项目：
 
 ```bash
-ling create <agent_name>
+ling app list
+ling app init <agent_name> --product-id <product_id>
 cd <agent_name>
 ```
+
+`ling app init` 会把目标应用写入项目根目录的 `listenai.toml`。如果用户尚未确定应用，先用 `ling app list` 查询；不要替用户猜测 `<product_id>`。
 
 如用户指定环境，把 `--api-base-url` 放在子命令前：
 
 ```bash
-ling --api-base-url <api_base_url> create <agent_name>
+ling --api-base-url <api_base_url> app init <agent_name> --product-id <product_id>
 ```
 
 构建与本地调试：
 
 ```bash
-ling build
-ling dev
+ling app build
+ling app dev
 ```
 
 部署：
 
 ```bash
-ling deploy --product-id <product_id> --version <version>
+ling app deploy --product-id <product_id> --version <version>
 ```
 
 可先 dry-run：
 
 ```bash
-ling deploy --product-id <product_id> --version <version> --dry-run
+ling app deploy --product-id <product_id> --version <version> --dry-run
 ```
 
 ## 4. 真实设备 PID/SID 切换

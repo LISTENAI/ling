@@ -1,20 +1,29 @@
 # ling
 
-ListenAI 本地 CLI 工具。使用 ListenAI API Key 登录后，可以在终端里查看账号、模型、应用，并发起对话。
+ListenAI 本地 CLI 工具。使用 ListenAI API Key 登录后，可以在终端里调用平台 AI 能力、管理应用与知识库，并完成 Agent 项目的开发部署。
 
 - `ling login`：保存并校验 API Key。
 - `ling account`：查看当前 API Key 对应的账号信息，`--json` 输出原始 JSON。
-- `ling models`：查看当前 API Key 可用模型列表，`--json` 输出原始 JSON。
-- `ling chat <prompt>`：发起对话，支持 `--stream` 和 `--json`。
-- `ling app list`：查看平台应用列表，默认输出终端表格，`--json` 输出原始 JSON。
-- `ling app inspect <product_id>`：查看单个应用摘要，默认输出精简配置视图，`--json` 输出原始 JSON。
-- `ling wiki search <关键词...>`：搜索 ListenAI 文档中心，默认输出标题和 URL；多关键词按词分组展示，`--json` 输出完整 JSON。
-- `ling create/build/dev/deploy`：创建、构建、本地运行和部署 ListenAI Agent 项目。
+- `ling ai models`：查看可用模型列表。
+- `ling ai chat <prompt>`：发起对话，支持 `--stream` 和 `--json`。
+- `ling ai tts <text>`：语音合成，输出音频 URL；`-o` 保存文件，`--list-vcn` 列出发音人。
+- `ling ai asr <file>`：语音识别（16k 16bit LE 单声道 PCM / WAV）。
+- `ling app list / inspect`：查看平台应用列表与摘要。
+- `ling app init <name>`：初始化本地 Agent 项目并关联平台应用（写入 `listenai.toml`）。
+- `ling app build / dev / deploy`：构建、本地运行和部署 Agent 项目。
+- `ling app request`：向云端发起一次端云链路模拟请求，打印所有返回帧并输出 SID。
+- `ling app trace <sid>`：按 SID 查询既有请求记录。
+- `ling app device quota/query/enforce`：设备额度、授权查询与白名单状态。
+- `ling app role/interact-mode/kb/lexicon/tone`：查看应用的角色、交互模式、知识库、专业词汇与提示语配置。
+- `ling kb`：账号级知识库增删查 + 文档管理 + 文本检索。
+- `ling wiki search <关键词...>`：搜索 ListenAI 文档中心。
+
+> 部分管理写操作（创建应用、设备导入/白名单开关、OTA 管理、角色/提示语/专业词汇/MCP/唤醒词的增删改）依赖的平台开放 API 尚未上线，对应命令会给出明确提示；后端打通 API Key 授权链路后即可启用。
 
 ## 环境依赖
 
 - 基础 CLI 功能只需要 `ling` 二进制。
-- Agent 项目命令（`ling create/build/dev`）依赖 `Node.js 18+`；`ling create` 会从平台获取最新 Framework SDK 并默认执行 `npm install`。
+- Agent 项目命令（`ling app init/build/dev`）依赖 `Node.js 18+`；`ling app init` 会从平台获取最新 Framework SDK 并默认执行 `npm install`。
 
 ## Agent Skill
 
@@ -102,7 +111,7 @@ make install
 ling --help
 ```
 
-也可以使用 Cargo 命令直接安装；`ling create/build/dev/deploy` 已在 Rust 主程序内实现，不需要额外二进制：
+也可以使用 Cargo 命令直接安装；所有子命令都在 Rust 主程序内实现，不需要额外二进制：
 
 ```bash
 cargo install --path crates/ling --locked --force --root "$HOME/.local"
@@ -181,168 +190,168 @@ ling account
 
 ## 环境切换
 
-默认 API 地址是生产环境：
-
-```bash
-ling account
-ling models
-ling chat "你好"
-ling app list
-```
-
-访问其他环境时，把 `--api-base-url` 放在子命令前：
+默认 API 地址是生产环境。访问其他环境时，把 `--api-base-url` 放在子命令前：
 
 ```bash
 ling --api-base-url https://xxx.listenai.com account
-ling --api-base-url https://xxx.listenai.com models
-ling --api-base-url https://xxx.listenai.com chat "你好"
 ling --api-base-url https://xxx.listenai.com app list
-ling --api-base-url https://xxx.listenai.com app inspect <product_id>
 ```
 
 也可以长期设置环境变量：
 
 ```bash
 export LING_API_BASE_URL=https://xxx.listenai.com
+export LING_PLATFORM_BASE_URL=https://xxx-platform.listenai.com   # 影响 --list-vcn 等平台接口
 ling app list
 ```
 
-## Agent 开发命令
+## 基础 AI 能力（ling ai）
 
-`ling create/build/dev/deploy` 都由 `ling` Rust 主程序直接实现：
+### 模型与对话
 
 ```bash
-ling create my-agent
-cd my-agent
-ling build
-ling build --release
-ling build --entry src/main.ts --out dist/agent.min.js --release
-ling dev
+ling ai models
+ling ai models --json
+
+ling ai chat "广州有什么好玩的"
+ling ai chat "广州有什么好玩的" --model spark-general-max-32k
+ling ai chat "只输出一句话介绍你自己" --system "你是小聆助手"
+ling ai chat "写一首短诗" --temperature 0.7 --max-tokens 200
+ling ai chat "解释一下 RAG" --stream
+ling ai chat "解释一下 RAG" --json
 ```
 
-`ling create` 会调用 `/external/framework/sdk/latest` 获取最新 Framework SDK，下载并解压其中的默认模板生成项目，然后自动执行 `npm install`；只想生成文件时可用 `ling create my-agent --no-install` 跳过依赖安装。
+### 语音合成（TTS）
 
-`ling create` 会把 Framework SDK 的版本写入项目级 `.version` 文件。后续执行 `ling build`、`ling dev`、`ling deploy` 时会通过同一个接口检查该版本是否低于最新 SDK 版本；如果需要更新，交互终端会提示输入 `y` 或 `n`，输入 `y` 后会下载最新 SDK 并更新项目内 `sdk/` 目录。
-
-默认从当前目录读取 `agent.ts`，输出到 `dist/agent.js`。打包格式为 ES2017 IIFE，并把 `@listenai/agent-sdk` 解析到项目内 `sdk/src/index.ts`。`ling build` 会优先使用 `LING_ESBUILD_BIN`、项目内 `node_modules/.bin/esbuild`、PATH 中的 `esbuild`，找不到时通过 `npx`/`npm exec` 调用固定版本 esbuild。
-
-`ling dev` 会启动 esbuild watch，并用 Node.js Mock Host Harness 加载 bundle，提供热重载和 Mock 设备 REPL；输入一行文本回车即可向 Agent 发送一次 `isLast=true` 的文本消息。
-
-`ling deploy` 上传已构建的 JavaScript bundle 并创建 Agent 版本；也可以用 `--dry-run` 只做本地预览：
+传入一段文本，返回一个音频拉取 URL；`-o` 同时把音频保存到文件：
 
 ```bash
-ling deploy --product-id <product_id> --version v1.0.0 --dry-run
-ling deploy \
+ling ai tts 你好，今天天气怎么样
+ling ai tts --vcn x5_lingyuzhao_flow --speed 60 你好
+ling ai tts --format pcm --sample-rate 16000 -o hello.pcm 你好
+ling ai tts --emotion cheerful --emotion-scale 10 今天真开心
+ling ai tts --list-vcn                # 列出所有支持的发音人
+```
+
+常用参数：`--vcn` 发音人、`--format mp3|pcm`、`--sample-rate 8000|16000|24000`、`--speed/--volume/--pitch 1-100`、`--emotion/--emotion-scale/--style`（smartTTS）。
+
+### 语音识别（ASR）
+
+传入一个音频文件，输出识别文本。暂只支持 PCM（16kHz 16bit LE 单声道）；传入 WAV 时会校验格式并自动去掉文件头：
+
+```bash
+ling ai asr hello.pcm
+ling ai asr hello.wav --vad-eos 800
+ling ai asr hello.pcm --json
+```
+
+### 唤醒词
+
+`ling ai wakeword` 依赖的平台开放 API 尚未上线，命令暂不可用。
+
+## 应用管理（ling app）
+
+### 列表与详情
+
+```bash
+ling app list
+ling app list --page 2 --page-size 20
+ling app list --service-type device
+ling app list --json
+
+ling app inspect <product_id>
+ling app inspect                     # 在含 listenai.toml 的项目目录内可省略 product_id
+ling app inspect <product_id> --json
+```
+
+`inspect` 展示：概览（项目/应用/产品 ID、密钥、计费）、角色、配置（唤醒词、主模型、版本、知识库/专业词汇/提示语/MCP 数量）、能力开关。
+
+**注意**：`inspect` 会明文展示产品密钥，不要将终端输出贴到公开日志或截图里。
+
+### 项目初始化与关联
+
+```bash
+ling app init my-agent                          # 拉取最新 Base 项目并交互式选择关联应用
+ling app init my-agent --product-id <product_id>
+ling app init my-agent --no-install             # 跳过 npm install
+```
+
+`init` 会把选中的 `product_id` 写入项目根目录的 `listenai.toml`。此后在项目目录内执行的 `ling app` 命令（inspect/deploy/request/device 等）都会默认使用该应用，无需再传 `--product-id`。
+
+### 构建 / 本地运行 / 部署
+
+```bash
+cd my-agent
+ling app build
+ling app build --release
+ling app dev
+ling app deploy --version v1.0.0 --dry-run              # product_id 取自 listenai.toml
+ling app deploy \
   --product-id <product_id> \
   --version v1.0.0 \
   --version-name 首次发布 \
-  --description 支持基础语音对话 \
-  --sdk-version 0.1.0
+  --description 支持基础语音对话
 ```
 
-`ling deploy` 会 PUT 上传 raw JavaScript bundle 到 `/v1/framework/agents/{productIdOrAppId}`。`--version` 必填；可以传 `0.1.0` 或 `v0.1.0`，上传时会规范为 `vX.Y.Z`。API Key 解析顺序：`--api-key`、`LING_API_KEY`、`ling login` 保存的配置、`LISTENAI_API_KEY`。
+`deploy` 参数：`--version` 必填（`0.1.0` 或 `v0.1.0`）；`--version-name` 默认 `<version> 版本`；`--sdk-version` 默认读取 `.version`；`--bundle` 默认 `dist/agent.js`；`--dry-run` 只预览。API Key 解析顺序：`--api-key`、`LING_API_KEY`、`ling login` 配置、`LISTENAI_API_KEY`。
 
-常用参数含义：
+### 端云链路模拟请求
 
-- `--product-id`：要部署到的 Product ID 或 App ID；服务端最终会解析为 App ID。
-- `--version`：本次上传的 Agent 版本，必填；可以传 `0.1.0` 或 `v0.1.0`，同一 App 下不能重复，且要大于已有最高版本。
-- `--version-name`：版本展示名称；不传时默认为 `<version> 版本`，例如 `--version 0.1.0` 会生成 `0.1.0 版本`。
-- `--description`：版本说明，例如本次新增或修复的能力。
-- `--sdk-version`：Agent SDK 版本；不传时读取当前目录 `.version`，读取不到则不传该参数。
-- `--bundle`：已构建 JS bundle 路径，默认 `dist/agent.js`。
-- `--endpoint`：平台 API 地址，默认 `https://api.listenai.com`，也可用全局 `--api-base-url` 指定。
-- `--dry-run`：只检查本地参数和 bundle，不实际上传。
-
-## 账号与模型
-
-查看当前 API Key 对应账号：
+对云端发起一次真实的端云交互（设备授权 + `/v1/dispatch`），并把所有链路返回帧原样打印：
 
 ```bash
-ling account
-ling account --json
+ling app request --text 你好，介绍一下你自己
+ling app request --file hello.pcm                        # 走 ASR + NLU + TTS 全链路
+ling app request --text 你好 --device-id <device_id>     # 应用开启白名单时需用已导入的设备 ID
+ling app request --text 你好 --llm-app <app_id>          # 多应用场景指定应用
 ```
 
-查看当前 API Key 可用模型：
+输出为 JSON 帧流（`connected`/`started`/`result`(iat/nlp/tts)/`finish`），便于管道处理；结束后在 stderr 输出本次请求的 `sid`。
+
+按 SID 回查请求记录（默认检索最近 24 小时，`--hours` 调整时间窗）：
 
 ```bash
-ling models
-ling models --json
+ling app trace <sid>                 # 概览 + 时间线（请求到达/技能命中/工具进出参/回复/响应完成）
+ling app trace <sid> --full          # 追加完整请求上下文与工具结果明细
+ling app trace <sid> --hours 2
+ling app trace <sid> --json          # 输出完整原始记录
 ```
 
-## 对话
-
-默认使用 `doubao-seed-1.6-flash` 调用 `/v1/chat/completions`：
+### 设备管理
 
 ```bash
-ling chat "广州有什么好玩的"
+ling app device quota                    # 总额度 / 已使用 / 强制白名单状态
+ling app device query <device_id>        # 查询设备是否已授权
+ling app device enforce                  # 查看强制白名单开关
 ```
 
-常用参数：
+`device list/add`、`device enforce on|off` 依赖的平台开放 API 尚未上线。
+
+### 应用配置查看
+
+以下命令从应用详情中读取配置，均支持 `--json`；`--product-id` 统一放在 `ling app` 之后（紧跟 action 之后也兼容），项目目录内可省略：
 
 ```bash
-ling chat "广州有什么好玩的" --model spark-general-max-32k
-ling chat "只输出一句话介绍你自己" --system "你是小聆助手"
-ling chat "写一首短诗" --temperature 0.7 --max-tokens 200
-ling chat "解释一下 RAG" --stream
-ling chat "解释一下 RAG" --json
+ling app --product-id <product_id> role list   # 角色列表（发音人/语速/音量/默认角色/唤醒词）
+ling app interact-mode         # 当前唤醒交互模式（oneshot / half-duplex / full-duplex）
+ling app kb list               # 应用关联的知识库
+ling app lexicon list          # 专业词汇
+ling app tone show             # 设备提示语表
 ```
 
-## 应用列表
+对应的写操作（`role add/edit/...`、`tone edit`、`interact-mode <mode>`、`ling app mcp`、`ling app ota`、`ling app create`）依赖的平台开放 API 尚未上线，执行时会给出明确提示。
 
-默认输出终端表格，固定展示重要字段：
+## 知识库（ling kb）
 
 ```bash
-ling app list
-```
-
-表格列：
-
-```text
-Name │ Product ID │ App ID │ Type │ Deploy │ Cost │ Status │ Created
-```
-
-分页参数：
-
-```bash
-ling app list --page 2
-ling app list --page 2 --page-size 20
-ling app list --service-type device
-```
-
-底部会显示当前分页和下一页/上一页命令：
-
-```text
-Showing 20 of 64 apps (page 1/4; page size 20). Use --json for raw output.
-Next: ling app list --page 2
-```
-
-输出服务端原始 JSON：
-
-```bash
-ling app list --json
-```
-
-## 应用详情
-
-默认输出适合终端阅读的摘要，只展示关键信息：
-
-```bash
-ling app inspect <product_id>
-```
-
-摘要包含：
-
-- 概览：项目 ID、应用 ID、产品 ID、产品密钥、计费、创建人、创建时间
-- 角色：角色名、默认角色、类型、音色、角色知识库数量
-- 配置：唤醒词、主模型、应用版本、更新策略、知识库数量、专业词汇数量、提示语数量、MCP 服务器数量
-- 能力：长期记忆、声纹识别、联网搜索、文字生成图片、图片内容理解
-
-`inspect` 默认会明文展示用户自己项目下的产品密钥，方便复制使用；注意不要把终端输出贴到公开日志或截图里。
-
-输出服务端原始 JSON：
-
-```bash
-ling app inspect <product_id> --json
+ling kb list
+ling kb create 产品手册
+ling kb delete <index_id>                # 交互确认；--yes 跳过
+ling kb doc <index_id> list
+ling kb doc <index_id> add --name 说明书.txt --url https://example.com/说明书.txt
+ling kb doc <index_id> delete <doc_id>...
+ling kb query <index_id> 空调怎么开
+ling kb query <index_id> 空调怎么开 --limit 5 --threshold 0.3
 ```
 
 ## 真实设备 PID/SID 切换
@@ -363,20 +372,5 @@ adb shell device set_sid <product_secret>
 
 ```bash
 ling wiki search 标准API 获取密钥
-```
-
-示例输出：
-
-```text
-找到 1 条文档：
-1. 标准API
-   https://docs2.listenai.com/zh/大模型开发/API接口/标准API
-
-使用 --json 输出 JSON。
-```
-
-输出完整 JSON：
-
-```bash
-ling wiki search 标准API 获取密钥 --json
+ling wiki search 标准API --json
 ```
