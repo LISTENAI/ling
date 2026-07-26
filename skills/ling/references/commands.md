@@ -106,6 +106,7 @@ ling app create <name> --template-id <id>
 ling app delete --product-id <product_id>
 
 ling app role list
+ling app role show <role_id>
 ling app role add <name> --set persona='"..."' --set vcn=<vcn>
 ling app role edit <role_id> --set speed=60
 ling app role set-default <role_id>
@@ -122,12 +123,14 @@ ling app kb unlink <index_id>
 
 ling app lexicon list
 ling app lexicon add <word>
+ling app lexicon import words.txt
 ling app lexicon edit <word>
 ling app lexicon delete <hotword_id>
 
 ling app tone show
 ling app tone edit --set key=text
 ling app tone edit --reset key
+ling app tone edit --reset key-a --reset key-b --set key-a=text
 ling app tone edit --reset-all
 
 ling app mcp list
@@ -228,3 +231,4 @@ ling wiki search 标准API --json
 ```
 
 单关键词最多显示 20 条；多关键词按组显示，每组最多 5 条。
+结果包含稳定的文档 ID；当前版本不提供正文读取命令。
