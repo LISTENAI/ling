@@ -1,6 +1,6 @@
 interface:
   display_name: "ListenAI ling"
-  short_description: "Login, Agent workflows, and device PID/SID setup"
-  default_prompt: "Use $ling to log in, verify my ListenAI account, and guide me through an Agent or device PID/SID workflow."
+  short_description: "Use ListenAI AI, apps, knowledge bases, Agents, and devices"
+  default_prompt: "Use $ling to help me complete a ListenAI CLI task safely."
 policy:
   allow_implicit_invocation: true
