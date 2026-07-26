@@ -305,9 +305,9 @@ enum AppCommand {
         /// How many hours back to search (default 168 / seven days).
         #[arg(long, default_value_t = 168)]
         hours: u32,
-        /// Show the full request context and tool details.
-        #[arg(long, visible_alias = "verbose")]
-        full: bool,
+        /// Show every Agent or request-record step as one compact line.
+        #[arg(long, visible_alias = "full")]
+        verbose: bool,
         /// Print the raw matching records as JSON.
         #[arg(long)]
         json: bool,
@@ -1222,9 +1222,9 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
         AppCommand::Trace {
             sid,
             hours,
-            full,
+            verbose,
             json,
-        } => trace_command(cli, &sid, hours, full, json).await?,
+        } => trace_command(cli, &sid, hours, verbose, json).await?,
         AppCommand::Device(args) => device_command(cli, args, selector).await?,
         AppCommand::Ota(args) => ota_command(cli, args, selector).await?,
         AppCommand::Role(args) => role_command(cli, args, selector).await?,
@@ -1604,7 +1604,7 @@ impl RequestTimelineOutputState {
     }
 }
 
-async fn trace_command(cli: &Ctx, sid: &str, hours: u32, full: bool, json: bool) -> Result<()> {
+async fn trace_command(cli: &Ctx, sid: &str, hours: u32, verbose: bool, json: bool) -> Result<()> {
     let api_key = resolve_api_key()?;
     if let Some(output) =
         ling_plugin_app::records::query_agent_logs(&cli.api_base_url, &api_key, sid).await?
@@ -1613,17 +1613,19 @@ async fn trace_command(cli: &Ctx, sid: &str, hours: u32, full: bool, json: bool)
             .get("data")
             .and_then(Value::as_array)
             .is_some_and(|logs| !logs.is_empty());
-        if !has_logs {
-            anyhow::bail!("未找到 SID 为 {sid} 的 Agent 执行日志。");
+        if has_logs {
+            if json {
+                return print_json(&output);
+            }
+            println!(
+                "{}",
+                ling_plugin_app::records::render_agent_trace(&output, sid, verbose)?
+            );
+            return Ok(());
         }
-        if json {
-            return print_json(&output);
-        }
-        println!("{}", ling_plugin_app::records::render_agent_logs(&output)?);
-        return Ok(());
     }
 
-    eprintln!("目标 API 不支持按 SID 直查，正在兼容扫描最近 {hours} 小时的请求记录…");
+    eprintln!("未取得 Agent 执行日志，正在兼容扫描最近 {hours} 小时的请求记录…");
     let outcome =
         ling_plugin_app::records::find_by_sid(&cli.api_base_url, &api_key, sid, hours).await?;
     // SID 是请求唯一标识：要么恰好一条，要么未命中（报错退出，便于脚本判断）
@@ -1637,7 +1639,10 @@ async fn trace_command(cli: &Ctx, sid: &str, hours: u32, full: bool, json: bool)
     if json {
         print_json(&record)
     } else {
-        println!("{}", ling_plugin_app::records::render_record(&record, full));
+        println!(
+            "{}",
+            ling_plugin_app::records::render_record(&record, sid, verbose)
+        );
         Ok(())
     }
 }
@@ -3605,6 +3610,31 @@ mod tests {
                 other => panic!("expected app request command, got {other:?}"),
             },
             other => panic!("expected app command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn app_trace_uses_verbose_and_keeps_full_as_an_alias() {
+        for flag in ["--verbose", "--full"] {
+            let cli = Cli::try_parse_from(["ling", "app", "trace", "sid-1", flag])
+                .expect("parse trace details");
+            match cli.command {
+                Command::App(app) => match app.command {
+                    AppCommand::Trace {
+                        sid,
+                        hours,
+                        verbose,
+                        json,
+                    } => {
+                        assert_eq!(sid, "sid-1");
+                        assert_eq!(hours, 168);
+                        assert!(verbose);
+                        assert!(!json);
+                    }
+                    other => panic!("expected app trace command, got {other:?}"),
+                },
+                other => panic!("expected app command, got {other:?}"),
+            }
         }
     }
 

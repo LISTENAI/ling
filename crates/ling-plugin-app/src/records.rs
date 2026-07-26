@@ -67,28 +67,342 @@ pub async fn query_requests(
     serde_json::from_str(&body).context("请求记录响应不是合法 JSON")
 }
 
-pub fn render_agent_logs(value: &Value) -> Result<String> {
+/// Render the structured Agent log stream as a concise timeline. Verbose mode
+/// appends every original log entry as one compact line.
+pub fn render_agent_trace(value: &Value, requested_sid: &str, verbose: bool) -> Result<String> {
     let logs = value
         .get("data")
         .and_then(Value::as_array)
         .context("Agent 日志响应缺少 data 数组")?;
-    let mut output = String::new();
-    for log in logs {
-        let timestamp = log.get("timestamp").and_then(Value::as_str).unwrap_or("-");
-        let content = log.get("content").and_then(Value::as_str).unwrap_or("-");
-        output.push_str(timestamp);
-        output.push_str("  ");
-        output.push_str(content);
-        output.push('\n');
+
+    let parsed = logs.iter().map(parse_agent_log).collect::<Vec<_>>();
+    let mut summary = AgentTraceSummary::default();
+    let mut timeline = Vec::new();
+    let mut model_call_count = 0_u64;
+
+    for log in &parsed {
+        summary.observe(log);
+        if let Some(line) = agent_timeline_line(log, &mut model_call_count) {
+            timeline.push(line);
+        }
     }
+
+    if timeline.is_empty() {
+        timeline.push("[--:--:--.---] 会话日志已返回，但没有可识别的概览事件".to_owned());
+    }
+
+    let mut output = timeline.join("\n");
+    output.push_str("\n\n");
+    output.push_str(&summary.render(requested_sid));
+
     if value
         .get("truncated")
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
-        output.push_str("注意：服务端日志结果已截断。\n");
+        output.push_str("\n- 日志：服务端结果已截断");
     }
-    Ok(output.trim_end().to_owned())
+
+    if verbose {
+        output.push_str("\n\n详细步骤：");
+        for log in &parsed {
+            output.push('\n');
+            output.push_str(&render_verbose_agent_log(log));
+        }
+    } else {
+        output.push_str("\n\n使用 --verbose 查看全部步骤，--json 输出服务端原始日志。");
+    }
+
+    Ok(output)
+}
+
+#[derive(Debug)]
+struct ParsedAgentLog<'a> {
+    timestamp: &'a str,
+    content: &'a str,
+    payload: Option<Value>,
+}
+
+fn parse_agent_log(log: &Value) -> ParsedAgentLog<'_> {
+    let timestamp = log.get("timestamp").and_then(Value::as_str).unwrap_or("");
+    let content = log.get("content").and_then(Value::as_str).unwrap_or("");
+    let payload = serde_json::from_str::<Value>(content).ok();
+    ParsedAgentLog {
+        timestamp,
+        content,
+        payload,
+    }
+}
+
+#[derive(Debug, Default)]
+struct AgentTraceSummary {
+    sid: Option<String>,
+    device_id: Option<String>,
+    product_id: Option<String>,
+    agent_version: Option<String>,
+    models: Vec<String>,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    cached_prompt_tokens: u64,
+    model_calls: u64,
+    elapsed_ms: Option<u64>,
+}
+
+impl AgentTraceSummary {
+    fn observe(&mut self, log: &ParsedAgentLog<'_>) {
+        let Some(payload) = log.payload.as_ref() else {
+            return;
+        };
+
+        fill_first(&mut self.sid, payload, "sid");
+        fill_first(&mut self.device_id, payload, "deviceId");
+        fill_first(&mut self.product_id, payload, "productId");
+
+        let message = string_field(payload, "message").unwrap_or_default();
+        if message.contains("agent bundle resolved") {
+            fill_first(&mut self.agent_version, payload, "version");
+        }
+
+        match string_field(payload, "event") {
+            Some("model.started") => {
+                self.model_calls += 1;
+                if let Some(model) = string_field(payload, "model") {
+                    if !self.models.iter().any(|known| known == model) {
+                        self.models.push(model.to_owned());
+                    }
+                }
+            }
+            Some("model.usage") => {
+                self.prompt_tokens += u64_field(payload, "promptTokens").unwrap_or(0);
+                self.completion_tokens += u64_field(payload, "completionTokens").unwrap_or(0);
+                self.cached_prompt_tokens += u64_field(payload, "cachedPromptTokens").unwrap_or(0);
+            }
+            Some("turn.completed") => {
+                self.elapsed_ms = u64_field(payload, "elapsedMs").or(self.elapsed_ms);
+            }
+            _ => {}
+        }
+    }
+
+    fn render(&self, requested_sid: &str) -> String {
+        let mut lines = vec![format!(
+            "- SID：{}",
+            self.sid.as_deref().unwrap_or(requested_sid)
+        )];
+        if let Some(device_id) = &self.device_id {
+            lines.push(format!("- 设备：{device_id}"));
+        }
+        if let Some(product_id) = &self.product_id {
+            lines.push(format!("- Product ID：{product_id}"));
+        }
+        if let Some(version) = &self.agent_version {
+            lines.push(format!("- Agent：{version}"));
+        }
+        if !self.models.is_empty() {
+            lines.push(format!("- 模型：{}", self.models.join(", ")));
+        }
+        if self.model_calls > 0 {
+            lines.push(format!("- 模型调用：{} 次", self.model_calls));
+        }
+        if self.prompt_tokens > 0 || self.completion_tokens > 0 {
+            let mut token = format!(
+                "- Token：输入 {}，输出 {}",
+                self.prompt_tokens, self.completion_tokens
+            );
+            if self.cached_prompt_tokens > 0 {
+                token.push_str(&format!("，缓存 {}", self.cached_prompt_tokens));
+            }
+            lines.push(token);
+        }
+        if let Some(elapsed_ms) = self.elapsed_ms {
+            lines.push(format!("- 耗时：{}", render_duration(elapsed_ms)));
+        }
+        lines.join("\n")
+    }
+}
+
+fn agent_timeline_line(log: &ParsedAgentLog<'_>, model_call_count: &mut u64) -> Option<String> {
+    let payload = log.payload.as_ref()?;
+    let time = timeline_time(log.timestamp, payload);
+    let event = string_field(payload, "event");
+    let message = string_field(payload, "message").unwrap_or_default();
+
+    let summary = match event {
+        Some("session.opened") => {
+            let mut fields = Vec::new();
+            if let Some(sid) = string_field(payload, "sid") {
+                fields.push(format!("sid: {sid}"));
+            }
+            if let Some(device_id) = string_field(payload, "deviceId") {
+                fields.push(format!("设备: {device_id}"));
+            }
+            if fields.is_empty() {
+                "会话开始".to_owned()
+            } else {
+                format!("会话开始，{}", fields.join("，"))
+            }
+        }
+        Some("asr.final") => format!(
+            "↑ 用户：{}",
+            string_field(payload, "text").unwrap_or("(服务端未记录文本)")
+        ),
+        Some("response.first_frame") => match u64_field(payload, "firstFrameMs") {
+            Some(ms) => format!("↓ 首帧到达（{}）", render_duration(ms)),
+            None => "↓ 首帧到达".to_owned(),
+        },
+        Some("model.started") => {
+            *model_call_count += 1;
+            let model = string_field(payload, "model").unwrap_or("unknown");
+            format!("模型调用 #{}：{model}", *model_call_count)
+        }
+        Some("tool.started") => {
+            let name = string_field(payload, "toolName").unwrap_or("unknown");
+            match payload.get("toolArguments") {
+                Some(arguments) if !arguments.is_null() => {
+                    format!("工具调用：{name} {}", compact(arguments))
+                }
+                _ => format!("工具调用：{name}"),
+            }
+        }
+        Some("tool.completed") => {
+            let name = string_field(payload, "toolName").unwrap_or("unknown");
+            let result = summarize_agent_tool_result(payload);
+            let duration = u64_field(payload, "durationMs")
+                .map(|ms| format!("（{}）", render_duration(ms)))
+                .unwrap_or_default();
+            match result {
+                Some(result) => format!("工具结果：{name} {result}{duration}"),
+                None => format!("工具完成：{name}{duration}"),
+            }
+        }
+        Some("response.final") => format!(
+            "↓ 回复：{}",
+            string_field(payload, "answer")
+                .or_else(|| string_field(payload, "answerPreview"))
+                .unwrap_or("(服务端未记录完整回复)")
+        ),
+        Some("turn.completed") => {
+            let outcome = string_field(payload, "outcome").unwrap_or("completed");
+            let duration = u64_field(payload, "elapsedMs")
+                .map(|ms| format!("，耗时 {}", render_duration(ms)))
+                .unwrap_or_default();
+            format!("会话结束：{outcome}{duration}")
+        }
+        _ if message.contains("agent bundle resolved") => match string_field(payload, "version") {
+            Some(version) => format!("Agent 版本：{version}"),
+            None => "Agent Bundle 已加载".to_owned(),
+        },
+        _ if message.contains("nlp TTS initialized") => {
+            format!("↓ TTS URL：{}", message_url(message).unwrap_or("(未记录)"))
+        }
+        _ if message.contains("nlp text stream initialized") => {
+            format!("↓ 文本 URL：{}", message_url(message).unwrap_or("(未记录)"))
+        }
+        _ if string_field(payload, "level") == Some("error") => {
+            format!("错误：{}", normalize_line(message))
+        }
+        _ => return None,
+    };
+
+    Some(format!("[{time}] {summary}"))
+}
+
+fn render_verbose_agent_log(log: &ParsedAgentLog<'_>) -> String {
+    let time = log
+        .payload
+        .as_ref()
+        .map(|payload| timeline_time(log.timestamp, payload))
+        .unwrap_or_else(|| timeline_time(log.timestamp, &Value::Null));
+    match &log.payload {
+        Some(payload) => {
+            let origin = string_field(payload, "origin").unwrap_or("unknown");
+            let level = string_field(payload, "level").unwrap_or("info");
+            let event = string_field(payload, "event")
+                .or_else(|| string_field(payload, "message"))
+                .unwrap_or("log");
+            format!(
+                "[{time}] {origin} {level} {event} {}",
+                serde_json::to_string(payload).unwrap_or_else(|_| "{}".to_owned())
+            )
+        }
+        None => format!("[{time}] log {}", normalize_line(log.content)),
+    }
+}
+
+fn fill_first(target: &mut Option<String>, payload: &Value, key: &str) {
+    if target.is_none() {
+        *target = string_field(payload, key).map(str::to_owned);
+    }
+}
+
+fn string_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+}
+
+fn u64_field(value: &Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(Value::as_u64)
+}
+
+fn timeline_time(timestamp: &str, payload: &Value) -> String {
+    let source = if timestamp.is_empty() {
+        string_field(payload, "time").unwrap_or("")
+    } else {
+        timestamp
+    };
+    DateTime::parse_from_rfc3339(source)
+        .map(|parsed| {
+            parsed
+                .with_timezone(&Local)
+                .format("%H:%M:%S%.3f")
+                .to_string()
+        })
+        .unwrap_or_else(|_| {
+            if source.is_empty() {
+                "--:--:--.---".to_owned()
+            } else {
+                source.to_owned()
+            }
+        })
+}
+
+fn message_url(message: &str) -> Option<&str> {
+    message
+        .split_once("url=")
+        .map(|(_, url)| url.trim())
+        .filter(|url| !url.is_empty())
+}
+
+fn summarize_agent_tool_result(payload: &Value) -> Option<String> {
+    let content = payload.get("resultContent")?.as_array()?;
+    let mut parts = Vec::new();
+    for item in content {
+        if let Some(text) = string_field(item, "text") {
+            parts.push(text.to_owned());
+        } else if !item.is_null() {
+            parts.push(compact(item));
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("；"))
+}
+
+fn render_duration(milliseconds: u64) -> String {
+    if milliseconds < 1000 {
+        format!("{milliseconds} ms")
+    } else {
+        format!("{:.2} s", milliseconds as f64 / 1000.0)
+    }
+}
+
+fn normalize_line(text: &str) -> String {
+    text.replace('\n', "\\n").replace('\r', "\\r")
+}
+
+fn compact(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
 }
 
 #[derive(Debug)]
@@ -169,124 +483,100 @@ fn record_matches_sid(record: &Value, sid: &str) -> bool {
         || id_matches(record.get("response_id"))
 }
 
-pub fn render_record(record: &Value, full: bool) -> String {
-    let mut output = String::new();
-    {
-        for (label, value) in [
-            (
-                "时间",
-                text_at(record, "/request_created_at").map(|time| {
-                    DateTime::parse_from_rfc3339(&time)
-                        .map(|parsed| {
-                            parsed
-                                .with_timezone(&Local)
-                                .format("%Y-%m-%d %H:%M:%S%.3f")
-                                .to_string()
-                        })
-                        .unwrap_or(time)
-                }),
-            ),
-            ("路径", text_at(record, "/request_path")),
-            ("模型", text_at(record, "/response_body/model")),
-            ("API Key", text_at(record, "/user_api_key_preview")),
-            ("请求", request_text(record)),
-            ("响应", response_text(record)),
-            ("Tokens", token_summary(record)),
-        ] {
-            if let Some(value) = value.filter(|value| !value.is_empty()) {
-                if !output.is_empty() {
-                    output.push('\n');
-                }
-                output.push_str(&format!("{label}: {value}"));
-            }
-        }
+pub fn render_record(record: &Value, requested_sid: &str, verbose: bool) -> String {
+    let mut timeline = Vec::new();
+    let start_time = text_at(record, "/request_created_at")
+        .and_then(local_hms_from_rfc3339)
+        .unwrap_or_else(|| "--:--:--.---".to_owned());
+    timeline.push(format!("[{start_time}] 请求开始"));
 
-        output.push_str(&render_timeline(record, full));
-
-        if full {
-            if let Some(messages) = record
-                .pointer("/request_body/messages")
-                .and_then(Value::as_array)
-            {
-                output.push_str("\n请求上下文:");
-                for message in messages {
-                    let role = message.get("role").and_then(Value::as_str).unwrap_or("-");
-                    let content = message
-                        .get("content")
-                        .map(|content| match content {
-                            Value::String(text) => text.clone(),
-                            other => other.to_string(),
-                        })
-                        .unwrap_or_default();
-                    output.push_str(&format!("\n  [{role}] {content}"));
-                }
-            }
-        }
-    }
-    if !full {
-        output.push_str("\n\n使用 --full 查看完整上下文与工具明细，--json 输出原始记录。");
-    } else {
-        output.push_str("\n\n使用 --json 输出原始记录。");
-    }
-    output
-}
-
-/// 时间线：请求到达 → 各链路节点 → 响应完成，时间按本地时区显示。
-fn render_timeline(record: &Value, full: bool) -> String {
-    const TIME_WIDTH: usize = 12; // "11:28:23.349"
-    let pad = |time: String| format!("{time:<TIME_WIDTH$}");
-    let indent = " ".repeat(TIME_WIDTH + 1);
-
-    let push_event = |output: &mut String, time: String, text: &str| {
-        output.push_str(&format!("\n  {} {}", pad(time), text));
-    };
-
-    let mut output = String::from("\n时间线:");
-    if let Some(time) = text_at(record, "/request_created_at").and_then(local_hms_from_rfc3339) {
-        push_event(&mut output, time, "请求到达");
+    if let Some(text) = request_text(record) {
+        timeline.push(format!("[{start_time}] ↑ 用户：{}", normalize_line(&text)));
     }
 
-    let mut detail_lines: Vec<String> = Vec::new();
+    let mut last_reply = None;
     for node in link_nodes(record) {
         let time = node
             .started_at
             .and_then(local_hms_from_unix)
-            .unwrap_or_default();
-        push_event(&mut output, time, &node.tag);
-        detail_lines.clear();
+            .unwrap_or_else(|| "--:--:--.---".to_owned());
         if let Some(tool_input) = &node.tool_input {
-            detail_lines.push(format!("工具输入: {}", clip(tool_input, full)));
+            timeline.push(format!(
+                "[{time}] 工具调用：{} {}",
+                node.tag,
+                clip(tool_input, false)
+            ));
         }
         for result in &node.tool_results {
-            if full {
-                let pretty =
-                    serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string());
-                detail_lines.push("工具结果:".to_owned());
-                detail_lines.extend(pretty.lines().map(|line| format!("  {line}")));
-            } else {
-                detail_lines.push(format!(
-                    "工具结果: {}",
-                    clip(&summarize_tool_result(result), false)
-                ));
-            }
+            timeline.push(format!(
+                "[{time}] 工具结果：{} {}",
+                node.tag,
+                clip(&summarize_tool_result(result), false)
+            ));
         }
         if !node.content.is_empty() {
-            detail_lines.push(format!("输出: {}", clip(&node.content, full)));
+            last_reply = Some(node.content);
         }
-        for line in &detail_lines {
-            output.push_str(&format!("\n  {indent}{line}"));
-        }
+    }
+
+    let response = response_text(record).or(last_reply);
+    if let Some(response) = response {
+        let time = text_at(record, "/response_created_at")
+            .and_then(local_hms_from_rfc3339)
+            .unwrap_or_else(|| "--:--:--.---".to_owned());
+        timeline.push(format!("[{time}] ↓ 回复：{}", normalize_line(&response)));
     }
 
     if let Some(time) = text_at(record, "/response_created_at").and_then(local_hms_from_rfc3339) {
-        let delay = record
+        let duration = record
             .get("delay_ms")
-            .and_then(Value::as_i64)
-            .map(|ms| format!("（耗时 {ms} ms）"))
+            .and_then(Value::as_u64)
+            .map(|ms| format!("，耗时 {}", render_duration(ms)))
             .unwrap_or_default();
-        push_event(&mut output, time, &format!("响应完成{delay}"));
+        timeline.push(format!("[{time}] 请求结束{duration}"));
     }
 
+    let mut output = timeline.join("\n");
+    let mut summary = vec![format!("- SID：{requested_sid}")];
+    if let Some(path) = text_at(record, "/request_path") {
+        summary.push(format!("- 路径：{path}"));
+    }
+    if let Some(model) = text_at(record, "/response_body/model") {
+        summary.push(format!("- 模型：{model}"));
+    }
+    if let Some(tokens) = token_summary(record) {
+        summary.push(format!("- Token：{tokens}"));
+    }
+    if let Some(ms) = record.get("delay_ms").and_then(Value::as_u64) {
+        summary.push(format!("- 耗时：{}", render_duration(ms)));
+    }
+    output.push_str("\n\n");
+    output.push_str(&summary.join("\n"));
+
+    if verbose {
+        output.push_str("\n\n详细步骤：");
+        if let Some(body) = record.get("request_body") {
+            output.push_str(&format!(
+                "\n[{start_time}] client → llm request {}",
+                compact(body)
+            ));
+        }
+        if let Some(frames) = record
+            .pointer("/response_body/streamed_data")
+            .and_then(Value::as_array)
+        {
+            for frame in frames {
+                let time = frame
+                    .get("created")
+                    .and_then(Value::as_i64)
+                    .and_then(local_hms_from_unix)
+                    .unwrap_or_else(|| "--:--:--.---".to_owned());
+                output.push_str(&format!("\n[{time}] llm → client frame {}", compact(frame)));
+            }
+        }
+    } else {
+        output.push_str("\n\n使用 --verbose 查看全部步骤，--json 输出服务端原始记录。");
+    }
     output
 }
 
@@ -412,11 +702,11 @@ fn token_summary(record: &Value) -> Option<String> {
     }
 }
 
-/// 默认视图截断长文本；--full 不截断。
-fn clip(text: &str, full: bool) -> String {
+/// 默认视图可截断长文本，需要完整内容的调用方可以显式关闭截断。
+fn clip(text: &str, unabridged: bool) -> String {
     const LIMIT: usize = 160;
     let text = text.trim();
-    if full || text.chars().count() <= LIMIT {
+    if unabridged || text.chars().count() <= LIMIT {
         return text.to_owned();
     }
     let clipped: String = text.chars().take(LIMIT).collect();
@@ -542,47 +832,142 @@ mod tests {
     }
 
     #[test]
-    fn renders_agent_logs_in_server_order() {
+    fn renders_agent_trace_as_human_timeline() {
         let output = json!({
             "data": [
-                {"timestamp": "2026-07-26T16:37:21.344+08:00", "content": "llm connecting version=2.0"},
-                {"timestamp": "2026-07-26T16:37:21.500+08:00", "content": "connected"}
+                {
+                    "timestamp": "2026-07-26T08:37:21.772Z",
+                    "content": json!({
+                        "level": "info", "origin": "host", "version": "v0.0.7",
+                        "deviceId": "device-1", "productId": "product-1", "sid": "sid-1",
+                        "message": "[LSAgentFramework] nlp agent bundle resolved"
+                    }).to_string()
+                },
+                {
+                    "timestamp": "2026-07-26T08:37:22.375Z",
+                    "content": json!({
+                        "level": "info", "origin": "host", "event": "session.opened",
+                        "deviceId": "device-1", "productId": "product-1", "sid": "sid-1",
+                        "message": "[LSAgentFramework] nlp session open"
+                    }).to_string()
+                },
+                {
+                    "timestamp": "2026-07-26T08:37:22.384Z",
+                    "content": json!({
+                        "level": "info", "origin": "host", "event": "asr.final",
+                        "deviceId": "device-1", "productId": "product-1", "sid": "sid-1",
+                        "text": "今天天气怎么样",
+                        "message": "[LSAgentFramework] process frame data"
+                    }).to_string()
+                },
+                {
+                    "timestamp": "2026-07-26T08:37:23.173Z",
+                    "content": json!({
+                        "level": "info", "origin": "agent", "event": "model.started",
+                        "deviceId": "device-1", "productId": "product-1", "sid": "sid-1",
+                        "model": "deepseek-v4-flash",
+                        "message": "[LSAgentFramework] official voice react model started"
+                    }).to_string()
+                },
+                {
+                    "timestamp": "2026-07-26T08:37:24.100Z",
+                    "content": json!({
+                        "level": "info", "origin": "agent", "event": "tool.started",
+                        "deviceId": "device-1", "productId": "product-1", "sid": "sid-1",
+                        "toolName": "get_weather_info",
+                        "toolArguments": {"location": "台北", "date": "今天"},
+                        "message": "[LSAgentFramework] official voice react tool started"
+                    }).to_string()
+                },
+                {
+                    "timestamp": "2026-07-26T08:37:24.500Z",
+                    "content": json!({
+                        "level": "info", "origin": "agent", "event": "tool.completed",
+                        "deviceId": "device-1", "productId": "product-1", "sid": "sid-1",
+                        "toolName": "get_weather_info", "durationMs": 400,
+                        "resultContent": [{"type": "text", "text": "今天台北晴。"}],
+                        "message": "[LSAgentFramework] official voice react tool completed"
+                    }).to_string()
+                },
+                {
+                    "timestamp": "2026-07-26T08:37:26.198Z",
+                    "content": json!({
+                        "level": "info", "origin": "agent", "event": "model.usage",
+                        "deviceId": "device-1", "productId": "product-1", "sid": "sid-1",
+                        "promptTokens": 7542, "completionTokens": 28,
+                        "cachedPromptTokens": 7424,
+                        "message": "[LSAgentFramework] official voice react model usage"
+                    }).to_string()
+                },
+                {
+                    "timestamp": "2026-07-26T08:37:26.201Z",
+                    "content": json!({
+                        "level": "info", "origin": "agent", "event": "response.final",
+                        "deviceId": "device-1", "productId": "product-1", "sid": "sid-1",
+                        "answer": "今天台北大晴天。",
+                        "message": "[LSAgentFramework] official voice final reply"
+                    }).to_string()
+                },
+                {
+                    "timestamp": "2026-07-26T08:37:26.479Z",
+                    "content": json!({
+                        "level": "info", "origin": "agent", "event": "turn.completed",
+                        "deviceId": "device-1", "productId": "product-1", "sid": "sid-1",
+                        "outcome": "COMPLETED", "elapsedMs": 4092,
+                        "message": "[LSAgentFramework] official voice turn completed"
+                    }).to_string()
+                }
             ],
             "truncated": true
         });
-        let rendered = render_agent_logs(&output).unwrap();
-        let first = rendered.find("llm connecting version=2.0").unwrap();
-        let second = rendered.find("connected").unwrap();
-        assert!(first < second);
-        assert!(rendered.contains("服务端日志结果已截断"));
+        let rendered = render_agent_trace(&output, "sid-1", false).unwrap();
+        assert!(rendered.contains("Agent 版本：v0.0.7"));
+        assert!(rendered.contains("会话开始，sid: sid-1，设备: device-1"));
+        assert!(rendered.contains("↑ 用户：今天天气怎么样"));
+        assert!(rendered.contains("模型调用 #1：deepseek-v4-flash"));
+        assert!(rendered
+            .contains("工具调用：get_weather_info {\"date\":\"今天\",\"location\":\"台北\"}"));
+        assert!(rendered.contains("工具结果：get_weather_info 今天台北晴。（400 ms）"));
+        assert!(rendered.contains("↓ 回复：今天台北大晴天。"));
+        assert!(rendered.contains("会话结束：COMPLETED，耗时 4.09 s"));
+        assert!(rendered.contains("- Token：输入 7542，输出 28，缓存 7424"));
+        assert!(rendered.contains("- 日志：服务端结果已截断"));
+        assert!(rendered.contains("--verbose"));
+        assert!(!rendered.contains("详细步骤："));
+
+        let verbose = render_agent_trace(&output, "sid-1", true).unwrap();
+        assert!(verbose.contains("详细步骤："));
+        assert!(verbose.contains("agent info tool.started {\""));
+        assert!(verbose.contains("\"toolArguments\":{\"date\":\"今天\",\"location\":\"台北\"}"));
+        assert!(!verbose.contains("使用 --verbose"));
     }
 
     #[test]
     fn renders_hit_summary_with_link_nodes() {
-        let out = render_record(&sample_record(), false);
+        let out = render_record(&sample_record(), "746c7ab660b341dbb27937c77f8223c7", false);
         assert!(out.contains("ls-interaction-v1"));
         assert!(out.contains("你好"));
         assert!(out.contains("1980（prompt 1940 + completion 40）"));
-        assert!(out.contains("时间线:"));
-        assert!(out.contains("请求到达"));
-        assert!(out.contains("aiui_datetimePro"));
-        assert!(out.contains("工具输入: 查询当前时间。"));
-        assert!(out.contains("工具结果: 当前是11点28分。"));
-        assert!(out.contains("reply_text"));
-        assert!(out.contains("输出: 现在是11点28分。"));
-        assert!(out.contains("响应完成（耗时 1968 ms）"));
-        // 默认模式不展示完整上下文
-        assert!(!out.contains("请求上下文"));
-        assert!(out.contains("--full"));
+        assert!(out.contains("请求开始"));
+        assert!(out.contains("↑ 用户：你好"));
+        assert!(out.contains("工具调用：aiui_datetimePro 查询当前时间。"));
+        assert!(out.contains("工具结果：aiui_datetimePro 当前是11点28分。"));
+        assert!(out.contains("↓ 回复：现在是11点28分。"));
+        assert!(out.contains("请求结束，耗时 1.97 s"));
+        assert!(!out.contains("详细步骤："));
+        assert!(out.contains("--verbose"));
     }
 
     #[test]
-    fn full_mode_shows_context_and_raw_tool_results() {
-        let out = render_record(&sample_record(), true);
-        assert!(out.contains("请求上下文:"));
-        assert!(out.contains("[user] 现在几点"));
-        assert!(out.contains("[assistant] 现在是11点。"));
-        assert!(out.contains("\"service\": \"datetime\""));
+    fn verbose_mode_shows_each_raw_record_frame_on_one_line() {
+        let out = render_record(&sample_record(), "746c7ab660b341dbb27937c77f8223c7", true);
+        assert!(out.contains("详细步骤："));
+        assert!(out.contains("client → llm request"));
+        assert!(out.contains("llm → client frame"));
+        assert!(out
+            .lines()
+            .filter(|line| line.contains("llm → client frame"))
+            .all(|line| !line.contains('\n')));
     }
 
     #[test]

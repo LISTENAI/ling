@@ -132,7 +132,7 @@ ling app --product-id <product_id> request \
 
 ```bash
 ling app trace <sid>
-ling app trace <sid> --full
+ling app trace <sid> --verbose
 ling app trace <sid> --json
 ```
 
@@ -187,7 +187,7 @@ ling <command> --help
 
 - 使用交互式 `ling login` 输入 API Key。
 - Product Secret 只用于 `app request` 和真实设备绑定。
-- `inspect --json`、`request --verbose` 和 `trace --full` 可能包含敏感信息，
+- `inspect --json`、`request --verbose` 和 `trace --verbose` 可能包含敏感信息，
   分享前请先脱敏。
 - 部分不适合在 CLI 中完成的操作会直接给出 ListenAI 平台网页入口。
 
