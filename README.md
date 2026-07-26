@@ -80,7 +80,8 @@ ling app inspect <product_id> --json
 ```
 
 大多数应用命令使用 Product ID。在 Agent 项目目录中，`ling` 会读取
-`listenai.toml` 中关联的应用。
+`listenai.toml` 中关联的应用。`inspect` 摘要会显示当前是托管接入还是
+自定义接入。
 
 查看应用配置相关命令：
 
@@ -165,6 +166,8 @@ adb shell device set_sid <product_secret>
 ling wiki search 标准API
 ling wiki search "标准API" "获取密钥"
 ```
+
+搜索结果包含稳定的文档 ID、标题和网页地址。
 
 ## 输出与帮助
 

@@ -270,9 +270,6 @@ enum AppCommand {
         /// Initial application template id.
         #[arg(long = "template-id")]
         template_id: u64,
-        /// Access mode: managed (official pipeline) or custom.
-        #[arg(long, value_parser = ["managed", "custom"], default_value = "managed")]
-        mode: String,
         /// Print the raw JSON response.
         #[arg(long)]
         json: bool,
@@ -536,6 +533,13 @@ enum RoleCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Show the complete configuration of one role.
+    Show {
+        role_id: String,
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
+    },
     /// Add a role.
     Add {
         name: String,
@@ -616,6 +620,12 @@ enum LexiconCommand {
     /// Add a lexicon entry.
     Add {
         word: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Import professional vocabulary from a UTF-8 text file, one word per line.
+    Import {
+        file: PathBuf,
         #[arg(long)]
         json: bool,
     },
@@ -846,6 +856,9 @@ enum KbDocCommand {
         /// Document URL the platform can fetch.
         #[arg(long)]
         url: String,
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
     },
     /// Show the web page for deleting documents.
     Delete {
@@ -1114,7 +1127,11 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
         AppCommand::Capabilities { json } => {
             let api_key = resolve_api_key()?;
             let output = management::capabilities(&cli.api_base_url, &api_key).await?;
-            print_management_result(&output, json)?;
+            if json {
+                print_json(&output)?;
+            } else {
+                println!("{}", config_view::render_management_capabilities(&output)?);
+            }
         }
         AppCommand::List {
             page,
@@ -1141,7 +1158,6 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
             name,
             description,
             template_id,
-            mode,
             json,
         } => {
             let api_key = resolve_api_key()?;
@@ -1157,11 +1173,6 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
                 print_json(&output)?;
             } else {
                 print_action_result(&output, "应用创建成功")?;
-                if mode == "custom" {
-                    eprintln!(
-                        "下一步：运行 `ling app init <name> --product-id <id>` 初始化并关联本地工程。"
-                    );
-                }
             }
         }
         AppCommand::Init(args) => {
@@ -1747,7 +1758,7 @@ async fn device_command(cli: &Ctx, args: DeviceArgs, selector: AppSelector) -> R
                 )
                 .await?
             };
-            print_management_result(&output, json)?;
+            print_action_or_json(&output, json, "设备导入请求已提交")?;
         }
     }
     Ok(())
@@ -1770,7 +1781,35 @@ async fn role_command(cli: &Ctx, args: RoleArgs, selector: AppSelector) -> Resul
                 page_size,
             )
             .await?;
-            print_management_result(&output, json)
+            if json {
+                print_json(&output)
+            } else {
+                println!("{}", config_view::render_management_role_list(&output)?);
+                Ok(())
+            }
+        }
+        RoleCommand::Show { role_id, json } => {
+            let output = management::get_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["roles", &role_id],
+            )
+            .await?;
+            if json {
+                print_json(&output)
+            } else {
+                let roles = management::list_all_resource(
+                    &cli.api_base_url,
+                    &app.api_key,
+                    &app.project_id,
+                    &["roles"],
+                )
+                .await?;
+                let output = role_detail_with_project_default(output, &roles, &role_id);
+                println!("{}", config_view::render_management_role_detail(&output)?);
+                Ok(())
+            }
         }
         RoleCommand::Add { name, input, json } => {
             let mut body = json_body_from_input(input, role_edit_key)?;
@@ -1785,15 +1824,25 @@ async fn role_command(cli: &Ctx, args: RoleArgs, selector: AppSelector) -> Resul
                 body,
             )
             .await?;
-            print_management_result(&output, json)
+            print_action_or_json(&output, json, "角色创建成功")
         }
         RoleCommand::Edit {
             role_id,
             input,
             json,
         } => {
-            let body = json_body_from_input(input, role_edit_key)?;
+            let mut body = json_body_from_input(input, role_edit_key)?;
             ensure_non_empty_object(&body, "role edit")?;
+            if body.get("tts").is_some() {
+                let detail = management::get_resource(
+                    &cli.api_base_url,
+                    &app.api_key,
+                    &app.project_id,
+                    &["roles", &role_id],
+                )
+                .await?;
+                complete_role_tts(&mut body, &detail)?;
+            }
             let output = management::update_resource(
                 &cli.api_base_url,
                 &app.api_key,
@@ -1802,7 +1851,7 @@ async fn role_command(cli: &Ctx, args: RoleArgs, selector: AppSelector) -> Resul
                 body,
             )
             .await?;
-            print_management_result(&output, json)
+            print_action_or_json(&output, json, "角色更新成功")
         }
         RoleCommand::Delete { role_id } => Err(app_config_only_operation(
             &format!("删除角色 {role_id}"),
@@ -1817,9 +1866,44 @@ async fn role_command(cli: &Ctx, args: RoleArgs, selector: AppSelector) -> Resul
                 serde_json::json!({"role_id": role_id}),
             )
             .await?;
-            print_management_result(&output, json)
+            print_action_or_json(&output, json, "默认角色设置成功")
         }
     }
+}
+
+fn role_detail_with_project_default(mut detail: Value, roles: &[Value], role_id: &str) -> Value {
+    let is_default = roles
+        .iter()
+        .find(|role| role.get("id").and_then(Value::as_str) == Some(role_id))
+        .and_then(|role| role.get("is_default"))
+        .and_then(Value::as_bool);
+    if let (Some(is_default), Some(role)) = (
+        is_default,
+        detail.get_mut("data").and_then(Value::as_object_mut),
+    ) {
+        role.insert("is_default".to_owned(), Value::Bool(is_default));
+    }
+    detail
+}
+
+fn complete_role_tts(body: &mut Value, detail: &Value) -> Result<()> {
+    let requested = body
+        .get_mut("tts")
+        .and_then(Value::as_object_mut)
+        .context("角色 tts 配置必须是 JSON 对象")?;
+    let current = detail
+        .pointer("/data/tts")
+        .and_then(Value::as_object)
+        .context("角色详情缺少 data.tts，无法进行部分音色更新")?;
+    for key in ["vcn", "volume", "speed"] {
+        if !requested.contains_key(key) {
+            let value = current
+                .get(key)
+                .with_context(|| format!("角色详情缺少 data.tts.{key}"))?;
+            requested.insert(key.to_owned(), value.clone());
+        }
+    }
+    Ok(())
 }
 
 async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<()> {
@@ -1839,7 +1923,12 @@ async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<
                 page_size,
             )
             .await?;
-            print_management_result(&output, json)
+            if json {
+                print_json(&output)
+            } else {
+                println!("{}", config_view::render_management_ota_list(&output)?);
+                Ok(())
+            }
         }
         OtaCommand::Get { package_id, json } => {
             let items = management::list_all_resource(
@@ -1888,7 +1977,7 @@ async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<
                 },
             )
             .await?;
-            print_management_result(&output, json)
+            print_action_or_json(&output, json, "OTA 包上传成功")
         }
         OtaCommand::Edit {
             package_id,
@@ -1924,7 +2013,7 @@ async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<
                 },
             )
             .await?;
-            print_management_result(&output, json)
+            print_action_or_json(&output, json, "OTA 包更新成功")
         }
         OtaCommand::Publish { package_id } => Err(app_config_only_operation(
             &format!("正式发布 OTA 包 {package_id}"),
@@ -1954,7 +2043,7 @@ async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<
                 &["ota", "packages", &package_id],
             )
             .await?;
-            print_management_result(&output, json)
+            print_action_or_json(&output, json, "OTA 包删除成功")
         }
         OtaCommand::Whitelist { command } => match command {
             OtaWhitelistCommand::List {
@@ -1971,7 +2060,12 @@ async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<
                     page_size,
                 )
                 .await?;
-                print_management_result(&output, json)
+                if json {
+                    print_json(&output)
+                } else {
+                    println!("{}", config_view::render_management_ota_whitelist(&output)?);
+                    Ok(())
+                }
             }
             OtaWhitelistCommand::Add { device_id, json } => {
                 let output = management::action_resource(
@@ -1982,7 +2076,7 @@ async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<
                     None,
                 )
                 .await?;
-                print_management_result(&output, json)
+                print_action_or_json(&output, json, "OTA 白名单设备添加成功")
             }
             OtaWhitelistCommand::Delete { device_id, json } => {
                 let output = management::delete_resource(
@@ -1992,7 +2086,7 @@ async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<
                     &["ota", "whitelist", &device_id],
                 )
                 .await?;
-                print_management_result(&output, json)
+                print_action_or_json(&output, json, "OTA 白名单设备删除成功")
             }
         },
     }
@@ -2065,7 +2159,12 @@ async fn app_kb_command(cli: &Ctx, args: AppKbArgs, selector: AppSelector) -> Re
                 page_size,
             )
             .await?;
-            print_management_result(&output, json)
+            if json {
+                print_json(&output)
+            } else {
+                println!("{}", config_view::render_management_app_kbs(&output)?);
+                Ok(())
+            }
         }
         AppKbCommand::Link { index_id, json } => {
             replace_project_kb(cli, &api_key, &project_id, &index_id, true, json).await
@@ -2111,7 +2210,15 @@ async fn replace_project_kb(
         serde_json::json!({"knowledge_base_ids": ids}),
     )
     .await?;
-    print_management_result(&output, json)
+    print_action_or_json(
+        &output,
+        json,
+        if link {
+            "知识库关联成功"
+        } else {
+            "知识库解除关联成功"
+        },
+    )
 }
 
 async fn lexicon_command(cli: &Ctx, args: LexiconArgs, selector: AppSelector) -> Result<()> {
@@ -2135,7 +2242,12 @@ async fn lexicon_command(cli: &Ctx, args: LexiconArgs, selector: AppSelector) ->
                 page_size,
             )
             .await?;
-            print_management_result(&output, json)
+            if json {
+                print_json(&output)
+            } else {
+                println!("{}", config_view::render_management_lexicon(&output)?);
+                Ok(())
+            }
         }
         LexiconCommand::Add { word, json } => {
             let output = management::create_resource(
@@ -2146,7 +2258,113 @@ async fn lexicon_command(cli: &Ctx, args: LexiconArgs, selector: AppSelector) ->
                 serde_json::json!({"word": word}),
             )
             .await?;
-            print_management_result(&output, json)
+            print_action_or_json(&output, json, "专业词汇添加成功")
+        }
+        LexiconCommand::Import { file, json } => {
+            let content = std::fs::read_to_string(&file)
+                .with_context(|| format!("读取专业词汇文件失败：{}", file.display()))?;
+            let entries = lexicon_import_entries(&content);
+            if entries.is_empty() {
+                anyhow::bail!("专业词汇文件没有可导入的非空行：{}", file.display());
+            }
+
+            let current = management::list_all_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["hotwords"],
+            )
+            .await?;
+            let mut existing = current
+                .iter()
+                .filter_map(|item| item.get("word").and_then(Value::as_str))
+                .map(str::to_owned)
+                .collect::<HashSet<_>>();
+            let mut seen = HashSet::new();
+            let mut items = Vec::with_capacity(entries.len());
+            let mut succeeded = 0_u64;
+            let mut duplicates = 0_u64;
+            let mut failed = 0_u64;
+
+            for entry in entries {
+                let duplicate_reason = if !seen.insert(entry.word.clone()) {
+                    Some("file")
+                } else if existing.contains(&entry.word) {
+                    Some("existing")
+                } else {
+                    None
+                };
+                if let Some(reason) = duplicate_reason {
+                    duplicates += 1;
+                    items.push(serde_json::json!({
+                        "line": entry.line,
+                        "word": entry.word,
+                        "status": "duplicate",
+                        "reason": reason,
+                    }));
+                    continue;
+                }
+
+                match management::create_resource(
+                    &cli.api_base_url,
+                    &api_key,
+                    &project_id,
+                    &["hotwords"],
+                    serde_json::json!({"word": entry.word}),
+                )
+                .await
+                {
+                    Ok(output) => {
+                        succeeded += 1;
+                        existing.insert(entry.word.clone());
+                        items.push(serde_json::json!({
+                            "line": entry.line,
+                            "word": entry.word,
+                            "status": "created",
+                            "data": output.get("data").cloned().unwrap_or(Value::Null),
+                        }));
+                    }
+                    Err(error) => {
+                        failed += 1;
+                        items.push(serde_json::json!({
+                            "line": entry.line,
+                            "word": entry.word,
+                            "status": "failed",
+                            "error": format!("{error:#}"),
+                        }));
+                    }
+                }
+            }
+
+            let summary = serde_json::json!({
+                "total": items.len(),
+                "succeeded": succeeded,
+                "duplicates": duplicates,
+                "failed": failed,
+                "items": items,
+            });
+            if json {
+                print_json(&summary)?;
+            } else {
+                for item in summary["items"].as_array().into_iter().flatten() {
+                    let line = item["line"].as_u64().unwrap_or_default();
+                    let word = item["word"].as_str().unwrap_or("-");
+                    match item["status"].as_str() {
+                        Some("created") => println!("+ 第 {line} 行：{word}"),
+                        Some("duplicate") => println!("= 第 {line} 行：{word}（重复，已跳过）"),
+                        Some("failed") => eprintln!(
+                            "! 第 {line} 行：{word}：{}",
+                            item["error"].as_str().unwrap_or("未知错误")
+                        ),
+                        _ => {}
+                    }
+                }
+                eprintln!("导入完成：成功 {succeeded}，重复 {duplicates}，失败 {failed}");
+            }
+            if failed > 0 {
+                anyhow::bail!("有 {failed} 条专业词汇导入失败");
+            }
+            Ok(())
         }
         LexiconCommand::Edit { word } => Err(app_config_only_operation(
             &format!("修改专业词汇 {word}"),
@@ -2157,6 +2375,26 @@ async fn lexicon_command(cli: &Ctx, args: LexiconArgs, selector: AppSelector) ->
             &project_id,
         )),
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct LexiconImportEntry {
+    line: usize,
+    word: String,
+}
+
+fn lexicon_import_entries(content: &str) -> Vec<LexiconImportEntry> {
+    content
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let word = line.trim();
+            (!word.is_empty()).then(|| LexiconImportEntry {
+                line: index + 1,
+                word: word.to_owned(),
+            })
+        })
+        .collect()
 }
 
 async fn tone_command(cli: &Ctx, args: ToneArgs, selector: AppSelector) -> Result<()> {
@@ -2180,7 +2418,12 @@ async fn tone_command(cli: &Ctx, args: ToneArgs, selector: AppSelector) -> Resul
                 page_size,
             )
             .await?;
-            print_management_result(&output, json)
+            if json {
+                print_json(&output)
+            } else {
+                println!("{}", config_view::render_management_tones(&output)?);
+                Ok(())
+            }
         }
         ToneCommand::Edit {
             set,
@@ -2198,68 +2441,78 @@ async fn tone_command(cli: &Ctx, args: ToneArgs, selector: AppSelector) -> Resul
                     None,
                 )
                 .await?;
-                return print_management_result(&output, json);
-            }
-            if !reset.is_empty() {
-                if reset.len() > 1 || !set.is_empty() {
-                    anyhow::bail!(
-                        "服务端恢复默认接口一次只接受一个 key，不能与 --set 原子合并；请使用单个 --reset 或 --reset-all"
-                    );
-                }
-                let output = management::action_resource(
-                    &cli.api_base_url,
-                    &api_key,
-                    &project_id,
-                    &["prompt-tone-texts", "restore-default"],
-                    Some(serde_json::json!({"key": reset[0]})),
-                )
-                .await?;
-                return print_management_result(&output, json);
+                return print_action_or_json(&output, json, "全部提示语已恢复默认");
             }
 
             let texts = if let Some(file) = file {
                 let value = read_json_file(&file)?;
                 value.get("texts").cloned().unwrap_or(value)
             } else {
-                if set.is_empty() {
+                if set.is_empty() && reset.is_empty() {
                     anyhow::bail!("tone edit 需要 --set、--reset、--reset-all 或 --file");
                 }
-                let current = management::list_resource(
-                    &cli.api_base_url,
-                    &api_key,
-                    &project_id,
-                    &["prompt-tone-texts"],
-                    1,
-                    100,
-                )
-                .await?;
-                let mut texts = current
-                    .get("data")
-                    .and_then(Value::as_array)
-                    .context("提示语列表响应缺少 data 数组")?
-                    .iter()
-                    .map(|item| {
-                        let key = item
-                            .get("key")
-                            .and_then(Value::as_str)
-                            .context("提示语列表项缺少 key")?;
-                        let text = item
-                            .get("text")
-                            .and_then(Value::as_str)
-                            .context("提示语列表项缺少 text")?;
-                        Ok(serde_json::json!({"key": key, "text": text}))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                for assignment in set {
-                    let (key, text) = split_assignment(&assignment)?;
-                    let item = texts
-                        .iter_mut()
-                        .find(|item| item.get("key").and_then(Value::as_str) == Some(key.as_str()))
-                        .with_context(|| format!("当前提示语配置中不存在 key：{key}"))?;
-                    item.as_object_mut()
-                        .context("提示语列表项不是 JSON 对象")?
-                        .insert("text".to_owned(), parse_json_literal(&text));
+
+                let assignments = parse_tone_assignments(&set)?;
+                let mut texts = if assignments.is_empty() {
+                    None
+                } else {
+                    let current = management::list_resource(
+                        &cli.api_base_url,
+                        &api_key,
+                        &project_id,
+                        &["prompt-tone-texts"],
+                        1,
+                        100,
+                    )
+                    .await?;
+                    let texts = tone_texts(&current)?;
+                    validate_tone_assignment_keys(&texts, &assignments)?;
+                    Some(texts)
+                };
+
+                let mut restored = Vec::new();
+                let mut last_restore = None;
+                for key in reset {
+                    match management::action_resource(
+                        &cli.api_base_url,
+                        &api_key,
+                        &project_id,
+                        &["prompt-tone-texts", "restore-default"],
+                        Some(serde_json::json!({"key": key})),
+                    )
+                    .await
+                    {
+                        Ok(output) => {
+                            restored.push(key);
+                            last_restore = Some(output);
+                        }
+                        Err(error) => {
+                            let applied = if restored.is_empty() {
+                                "无".to_owned()
+                            } else {
+                                restored.join(", ")
+                            };
+                            anyhow::bail!(
+                                "提示语 {key} 恢复默认失败；此前已恢复：{applied}；未执行 --set：{error:#}"
+                            );
+                        }
+                    }
                 }
+
+                if assignments.is_empty() {
+                    return print_action_or_json(
+                        last_restore
+                            .as_ref()
+                            .context("tone edit 没有产生任何恢复结果")?,
+                        json,
+                        "提示语已恢复默认",
+                    );
+                }
+                if let Some(output) = last_restore {
+                    texts = Some(tone_texts(&output)?);
+                }
+                let mut texts = texts.context("提示语列表不可用")?;
+                apply_tone_assignments(&mut texts, &assignments)?;
                 Value::Array(texts)
             };
             if !texts.is_array() {
@@ -2273,9 +2526,69 @@ async fn tone_command(cli: &Ctx, args: ToneArgs, selector: AppSelector) -> Resul
                 serde_json::json!({"texts": texts}),
             )
             .await?;
-            print_management_result(&output, json)
+            print_action_or_json(&output, json, "提示语更新成功")
         }
     }
+}
+
+fn tone_texts(value: &Value) -> Result<Vec<Value>> {
+    value
+        .get("data")
+        .and_then(Value::as_array)
+        .context("提示语响应缺少 data 数组")?
+        .iter()
+        .map(|item| {
+            let key = item
+                .get("key")
+                .and_then(Value::as_str)
+                .context("提示语列表项缺少 key")?;
+            let text = item
+                .get("text")
+                .and_then(Value::as_str)
+                .context("提示语列表项缺少 text")?;
+            Ok(serde_json::json!({"key": key, "text": text}))
+        })
+        .collect()
+}
+
+fn parse_tone_assignments(values: &[String]) -> Result<Vec<(String, String)>> {
+    values
+        .iter()
+        .map(|assignment| {
+            let (key, text) = split_assignment(assignment)?;
+            match parse_json_literal(&text) {
+                Value::String(text) if !text.trim().is_empty() => Ok((key, text)),
+                Value::String(_) => anyhow::bail!("提示语文案不能为空：{key}"),
+                _ => anyhow::bail!("提示语文案必须是字符串：{key}"),
+            }
+        })
+        .collect()
+}
+
+fn validate_tone_assignment_keys(texts: &[Value], assignments: &[(String, String)]) -> Result<()> {
+    for (key, _) in assignments {
+        if !texts
+            .iter()
+            .any(|item| item.get("key").and_then(Value::as_str) == Some(key.as_str()))
+        {
+            anyhow::bail!("当前提示语配置中不存在 key：{key}");
+        }
+    }
+    Ok(())
+}
+
+fn apply_tone_assignments(texts: &mut [Value], assignments: &[(String, String)]) -> Result<()> {
+    validate_tone_assignment_keys(texts, assignments)?;
+    for (key, text) in assignments {
+        let item = texts
+            .iter_mut()
+            .find(|item| item.get("key").and_then(Value::as_str) == Some(key.as_str()))
+            .expect("tone assignment keys were validated");
+        item.as_object_mut()
+            .context("提示语列表项不是 JSON 对象")?
+            .insert("text".to_owned(), Value::String(text.clone()));
+    }
+    Ok(())
 }
 
 async fn mcp_command(cli: &Ctx, args: McpArgs, selector: AppSelector) -> Result<()> {
@@ -2299,7 +2612,12 @@ async fn mcp_command(cli: &Ctx, args: McpArgs, selector: AppSelector) -> Result<
                 page_size,
             )
             .await?;
-            print_management_result(&output, json)
+            if json {
+                print_json(&output)
+            } else {
+                println!("{}", config_view::render_management_mcps(&output)?);
+                Ok(())
+            }
         }
         McpCommand::Add {
             name,
@@ -2332,7 +2650,7 @@ async fn mcp_command(cli: &Ctx, args: McpArgs, selector: AppSelector) -> Result<
                 body,
             )
             .await?;
-            print_management_result(&output, json)
+            print_action_or_json(&output, json, "MCP 服务器添加成功")
         }
         McpCommand::Edit {
             server_id,
@@ -2349,7 +2667,7 @@ async fn mcp_command(cli: &Ctx, args: McpArgs, selector: AppSelector) -> Result<
                 body,
             )
             .await?;
-            print_management_result(&output, json)
+            print_action_or_json(&output, json, "MCP 服务器更新成功")
         }
         McpCommand::Enable { server_id, json } => {
             let output = management::update_resource(
@@ -2360,7 +2678,7 @@ async fn mcp_command(cli: &Ctx, args: McpArgs, selector: AppSelector) -> Result<
                 serde_json::json!({"enabled": true}),
             )
             .await?;
-            print_management_result(&output, json)
+            print_action_or_json(&output, json, "MCP 服务器已启用")
         }
         McpCommand::Disable { server_id, json } => {
             let output = management::update_resource(
@@ -2371,7 +2689,7 @@ async fn mcp_command(cli: &Ctx, args: McpArgs, selector: AppSelector) -> Result<
                 serde_json::json!({"enabled": false}),
             )
             .await?;
-            print_management_result(&output, json)
+            print_action_or_json(&output, json, "MCP 服务器已停用")
         }
         McpCommand::Delete { server_id } => Err(app_config_only_operation(
             &format!("删除 MCP 服务器 {server_id}"),
@@ -2523,7 +2841,7 @@ async fn config_command(cli: &Ctx, args: ConfigArgs, selector: AppSelector) -> R
                 None,
             )
             .await?;
-            print_management_result(&output, json)
+            print_action_or_json(&output, json, "模型配置已恢复默认")
         }
         ConfigCommand::TestModel {
             endpoint,
@@ -2543,7 +2861,7 @@ async fn config_command(cli: &Ctx, args: ConfigArgs, selector: AppSelector) -> R
                 Some(body),
             )
             .await?;
-            print_management_result(&output, json)
+            print_action_or_json(&output, json, "模型连接测试成功")
         }
     }
 }
@@ -2648,11 +2966,11 @@ async fn kb_command(api_base_url: &str, args: KbArgs) -> Result<()> {
                     Ok(())
                 }
             }
-            KbDocCommand::Add { name, url } => {
+            KbDocCommand::Add { name, url, json } => {
                 let output =
                     ling_plugin_kb::add_document(api_base_url, &api_key, &index_id, &name, &url)
                         .await?;
-                print_json(&output)
+                print_action_or_json(&output, json, "知识库文档添加成功")
             }
             KbDocCommand::Delete { doc_ids } => Err(web_only_operation(
                 &format!("删除知识库 {index_id} 中的 {} 个文档", doc_ids.len()),
@@ -2914,63 +3232,47 @@ fn kb_detail_url(index_id: &str) -> String {
     url.into()
 }
 
-fn print_management_result(value: &Value, raw_json: bool) -> Result<()> {
+fn print_action_or_json(value: &Value, raw_json: bool, fallback: &str) -> Result<()> {
     if raw_json {
-        return print_json(value);
-    }
-    if let Some(data) = value.get("data") {
-        print_json(&redact_sensitive(data.clone()))
+        print_json(value)
     } else {
-        let message = value
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("操作成功");
-        eprintln!("{message}");
-        Ok(())
+        print_action_result(value, fallback)
     }
 }
 
 fn print_action_result(value: &Value, fallback: &str) -> Result<()> {
-    if let Some(data) = value.get("data") {
-        print_json(&redact_sensitive(data.clone()))
-    } else {
-        eprintln!(
-            "{}",
-            value
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or(fallback)
-        );
-        Ok(())
-    }
+    eprintln!("{}", action_result_text(value, fallback));
+    Ok(())
 }
 
-fn redact_sensitive(mut value: Value) -> Value {
-    match &mut value {
-        Value::Object(object) => {
-            for (key, item) in object.iter_mut() {
-                if matches!(
-                    key.as_str(),
-                    "secret"
-                        | "previewSecret"
-                        | "preview_secret"
-                        | "authorization"
-                        | "device_token"
-                ) {
-                    *item = Value::String("***".to_owned());
-                } else {
-                    *item = redact_sensitive(std::mem::take(item));
-                }
+fn action_result_text(value: &Value, fallback: &str) -> String {
+    let hint = value
+        .get("data")
+        .and_then(Value::as_object)
+        .and_then(|data| {
+            let name = ["name", "word", "version"]
+                .iter()
+                .find_map(|key| data.get(*key).and_then(Value::as_str));
+            let id = [
+                "id",
+                "project_id",
+                "index_id",
+                "role_id",
+                "server_id",
+                "package_id",
+                "document_id",
+            ]
+            .iter()
+            .find_map(|key| data.get(*key).and_then(Value::as_str));
+            match (name, id) {
+                (Some(name), Some(id)) => Some(format!("：{name}（ID: {id}）")),
+                (Some(name), None) => Some(format!("：{name}")),
+                (None, Some(id)) => Some(format!("（ID: {id}）")),
+                (None, None) => None,
             }
-        }
-        Value::Array(items) => {
-            for item in items {
-                *item = redact_sensitive(std::mem::take(item));
-            }
-        }
-        _ => {}
-    }
-    value
+        })
+        .unwrap_or_default();
+    format!("{fallback}{hint}")
 }
 
 fn render_ota_package(value: &Value) -> String {
@@ -3142,8 +3444,6 @@ mod tests {
             "12",
             "--description",
             "Voice app",
-            "--mode",
-            "custom",
             "--json",
         ])
         .expect("parse app create");
@@ -3154,13 +3454,11 @@ mod tests {
                     name,
                     description,
                     template_id,
-                    mode,
                     json,
                 } => {
                     assert_eq!(name, "Demo");
                     assert_eq!(description.as_deref(), Some("Voice app"));
                     assert_eq!(template_id, 12);
-                    assert_eq!(mode, "custom");
                     assert!(json);
                 }
                 other => panic!("expected app create command, got {other:?}"),
@@ -3265,6 +3563,99 @@ mod tests {
     }
 
     #[test]
+    fn app_create_rejects_the_unreachable_mode_option() {
+        let err = Cli::try_parse_from([
+            "ling",
+            "app",
+            "create",
+            "Demo",
+            "--template-id",
+            "12",
+            "--mode",
+            "custom",
+        ])
+        .expect_err("create mode is not a reachable server state");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn parses_role_show_and_lexicon_import() {
+        let role = Cli::try_parse_from(["ling", "app", "role", "show", "role-1", "--json"])
+            .expect("parse role show");
+        match role.command {
+            Command::App(app) => match app.command {
+                AppCommand::Role(RoleArgs {
+                    command: RoleCommand::Show { role_id, json },
+                }) => {
+                    assert_eq!(role_id, "role-1");
+                    assert!(json);
+                }
+                other => panic!("expected role show command, got {other:?}"),
+            },
+            other => panic!("expected app command, got {other:?}"),
+        }
+
+        let lexicon =
+            Cli::try_parse_from(["ling", "app", "lexicon", "import", "words.txt", "--json"])
+                .expect("parse lexicon import");
+        match lexicon.command {
+            Command::App(app) => match app.command {
+                AppCommand::Lexicon(LexiconArgs {
+                    command: LexiconCommand::Import { file, json },
+                }) => {
+                    assert_eq!(file, PathBuf::from("words.txt"));
+                    assert!(json);
+                }
+                other => panic!("expected lexicon import command, got {other:?}"),
+            },
+            other => panic!("expected app command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lexicon_import_preserves_line_numbers_and_ignores_blank_lines() {
+        assert_eq!(
+            lexicon_import_entries("  ListenAI  \n\n小聆\nListenAI\n"),
+            vec![
+                LexiconImportEntry {
+                    line: 1,
+                    word: "ListenAI".to_owned(),
+                },
+                LexiconImportEntry {
+                    line: 3,
+                    word: "小聆".to_owned(),
+                },
+                LexiconImportEntry {
+                    line: 4,
+                    word: "ListenAI".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn tone_assignments_are_strings_and_last_value_wins() {
+        let assignments = parse_tone_assignments(&[
+            "network_suc=第一次".to_owned(),
+            "network_suc=\"最终文案\"".to_owned(),
+        ])
+        .unwrap();
+        let mut texts = vec![
+            serde_json::json!({"key": "network_suc", "text": "旧文案"}),
+            serde_json::json!({"key": "network_fail", "text": "失败"}),
+        ];
+        apply_tone_assignments(&mut texts, &assignments).unwrap();
+        assert_eq!(texts[0]["text"], "最终文案");
+        assert_eq!(texts[1]["text"], "失败");
+
+        assert!(parse_tone_assignments(&["network_suc=42".to_owned()]).is_err());
+        assert!(
+            apply_tone_assignments(&mut texts, &[("unknown".to_owned(), "文案".to_owned())])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn renders_ota_package_summary() {
         let summary = render_ota_package(&serde_json::json!({
             "id": "ota-1",
@@ -3293,14 +3684,50 @@ mod tests {
     }
 
     #[test]
-    fn default_output_redacts_nested_credentials() {
-        let value = redact_sensitive(serde_json::json!({
-            "product": {"secret": "product-secret"},
-            "servers": [{"authorization": "Bearer token", "name": "Weather"}]
-        }));
-        assert_eq!(value["product"]["secret"], "***");
-        assert_eq!(value["servers"][0]["authorization"], "***");
-        assert_eq!(value["servers"][0]["name"], "Weather");
+    fn action_output_is_human_readable_and_omits_credentials() {
+        let value = serde_json::json!({
+            "data": {
+                "id": "role-1",
+                "name": "小聆老师",
+                "authorization": "Bearer token"
+            }
+        });
+        let output = action_result_text(&value, "角色创建成功");
+        assert_eq!(output, "角色创建成功：小聆老师（ID: role-1）");
+        assert!(!output.contains("Bearer"));
+        assert!(!output.contains('{'));
+    }
+
+    #[test]
+    fn role_detail_uses_project_default_state() {
+        let detail = serde_json::json!({
+            "data": {"id": "role-1", "name": "小聆老师", "is_default": false}
+        });
+        let roles = vec![serde_json::json!({
+            "id": "role-1",
+            "name": "小聆老师",
+            "is_default": true
+        })];
+        let detail = role_detail_with_project_default(detail, &roles, "role-1");
+        assert_eq!(detail["data"]["is_default"], true);
+    }
+
+    #[test]
+    fn role_tts_partial_update_preserves_required_fields() {
+        let mut body = serde_json::json!({"tts": {"volume": 60}});
+        let detail = serde_json::json!({
+            "data": {
+                "tts": {
+                    "vcn": "x4_lingxiaoyue_oral",
+                    "volume": 50,
+                    "speed": 50
+                }
+            }
+        });
+        complete_role_tts(&mut body, &detail).unwrap();
+        assert_eq!(body["tts"]["vcn"], "x4_lingxiaoyue_oral");
+        assert_eq!(body["tts"]["volume"], 60);
+        assert_eq!(body["tts"]["speed"], 50);
     }
 
     #[test]
@@ -3835,13 +4262,14 @@ mod tests {
             "说明书.txt",
             "--url",
             "https://example.com/a.txt",
+            "--json",
         ])
         .expect("parse kb doc add");
         match cli.command {
             Command::Kb(kb) => match kb.command {
                 KbCommand::Doc { index_id, command } => {
                     assert_eq!(index_id, "idx-1");
-                    assert!(matches!(command, KbDocCommand::Add { .. }));
+                    assert!(matches!(command, KbDocCommand::Add { json: true, .. }));
                 }
                 other => panic!("expected kb doc command, got {other:?}"),
             },

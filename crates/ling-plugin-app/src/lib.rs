@@ -270,6 +270,7 @@ pub fn render_project_inspect_with_mcp_count(
                     .unwrap_or_else(|| "-".to_owned()),
             ),
             ("产品密钥", product_secret(product)),
+            ("接入模式", access_mode(app)),
             ("计费", field(project, "cost_type")),
             ("创建人", field(project, "created_by")),
             ("创建时间", format_created_at(&field(project, "created_at"))),
@@ -334,7 +335,6 @@ pub fn render_project_inspect_with_mcp_count(
         ]),
     );
 
-    append_section(&mut output, "能力", render_capabilities(feature));
     output.push_str("\n\nUse --json for the full raw response.");
 
     Ok(output.trim_end().to_owned())
@@ -378,6 +378,20 @@ fn format_created_at(value: &str) -> String {
         "-".to_owned()
     } else {
         value.to_owned()
+    }
+}
+
+fn access_mode(app: Option<&Value>) -> String {
+    let Some(app) = app else {
+        return "-".to_owned();
+    };
+    match app
+        .pointer("/framework_config/app_type")
+        .and_then(Value::as_str)
+    {
+        Some("custom") => "custom（自定义接入）".to_owned(),
+        Some("official") | None => "managed（托管接入）".to_owned(),
+        Some(value) => format!("unknown（服务端值：{value}）"),
     }
 }
 
@@ -526,32 +540,6 @@ fn app_version(app: Option<&Value>, feature: Option<&Value>) -> String {
     .unwrap_or_else(|| "-".to_owned())
 }
 
-fn enabled_capabilities(feature: Option<&Value>) -> Vec<&'static str> {
-    [
-        ("long_memory_enable", "长期记忆"),
-        ("vpr_enable", "声纹识别"),
-        ("search_enable", "联网搜索"),
-        ("text2img_enable", "文字生成图片"),
-        ("img2text_enable", "图片内容理解"),
-    ]
-    .into_iter()
-    .filter_map(|(key, label)| bool_field(feature, key).then_some(label))
-    .collect()
-}
-
-fn render_capabilities(feature: Option<&Value>) -> String {
-    let capabilities = enabled_capabilities(feature);
-    if capabilities.is_empty() {
-        "未开启能力".to_owned()
-    } else {
-        capabilities
-            .into_iter()
-            .map(|capability| format!("✓ {capability}"))
-            .collect::<Vec<_>>()
-            .join("  ")
-    }
-}
-
 fn render_key_values(rows: Vec<(&str, String)>) -> String {
     render_table(
         &["字段", "值"],
@@ -656,6 +644,7 @@ mod tests {
                 "apps": [{
                     "id": "da3062bf",
                     "serverless_type": 4,
+                    "framework_config": {"app_type": "custom"},
                     "config": {
                         "llm_roles": [
                             {"name": "小聆老师", "is_default": true},
@@ -683,12 +672,14 @@ mod tests {
         assert!(summary.contains("产品密钥"));
         assert!(summary.contains("4bffecaf-3119-4e24-add2-284228c3f845"));
         assert!(!summary.contains("4bffe*******3f845"));
+        assert!(summary.contains("custom（自定义接入）"));
         assert!(summary.contains("小聆老师"));
         assert!(summary.contains("提示语"));
         assert!(summary.contains("9"));
         assert!(summary.contains("主模型"));
         assert!(summary.contains("ls-xiaoling"));
-        assert!(summary.contains("图片内容理解"));
+        assert!(!summary.contains("▸ 能力"));
+        assert!(!summary.contains("图片内容理解"));
         assert!(summary.contains("Use --json for the full raw response."));
     }
 
@@ -706,6 +697,19 @@ mod tests {
 
         let resolved = render_project_inspect_with_mcp_count(&value, Some(9)).unwrap();
         assert!(resolved.contains("│ MCP 服务器 │ 9"));
+    }
+
+    #[test]
+    fn inspect_treats_missing_server_app_type_as_managed() {
+        let value = serde_json::json!({
+            "data": {
+                "name": "托管应用",
+                "apps": [{"config": {"llm_feature": {}}}]
+            }
+        });
+
+        let rendered = render_project_inspect(&value).unwrap();
+        assert!(rendered.contains("managed（托管接入）"));
     }
 
     #[test]

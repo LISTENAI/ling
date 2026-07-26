@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Serialize)]
 pub struct WikiSearchOutput {
+    pub id: String,
     pub title: String,
     pub url: String,
 }
@@ -57,6 +58,7 @@ struct GraphqlData {
 #[derive(Debug, Deserialize)]
 struct Pages {
     search: PageSearch,
+    list: Vec<PageListItem>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,8 +68,18 @@ struct PageSearch {
 
 #[derive(Debug, Deserialize)]
 struct PageSearchResult {
-    id: String,
+    #[serde(rename = "id")]
+    search_id: String,
     title: String,
+    path: String,
+    locale: String,
+    #[serde(skip)]
+    page_id: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PageListItem {
+    id: u64,
     path: String,
     locale: String,
 }
@@ -90,7 +102,7 @@ pub async fn search(docs_base_url: &str, keywords: &[String]) -> Result<Vec<Wiki
         let results = search_one(&client, &graphql_url, keyword).await?;
         for result in results {
             let key = if result.path.is_empty() {
-                result.id.clone()
+                result.search_id.clone()
             } else {
                 format!("{}:{}", result.locale, result.path)
             };
@@ -168,8 +180,9 @@ pub fn render_search_results(results: &[WikiSearchOutput]) -> String {
     };
     for (index, result) in results.iter().take(display_count).enumerate() {
         output.push_str(&format!(
-            "\n{}. {}\n   {}",
+            "\n{}. [{}] {}\n   {}",
             index + 1,
+            result.id,
             result.title,
             decode_url_for_display(&result.url)
         ));
@@ -217,8 +230,9 @@ pub fn render_search_groups(groups: &[WikiSearchGroup]) -> String {
 
         for (index, result) in group.results.iter().take(display_count).enumerate() {
             output.push_str(&format!(
-                "\n{}. {}\n   {}",
+                "\n{}. [{}] {}\n   {}",
                 index + 1,
+                result.id,
                 result.title,
                 decode_url_for_display(&result.url)
             ));
@@ -233,7 +247,7 @@ async fn search_one(
     graphql_url: &str,
     keyword: &str,
 ) -> Result<Vec<PageSearchResult>> {
-    let query = "query ($query: String!) { pages { search(query: $query) { results { id title description path locale content } suggestions totalHits } } }";
+    let query = "query ($query: String!) { pages { search(query: $query) { results { id title description path locale content } suggestions totalHits } list(limit: 5000) { id path locale } } }";
     let body = serde_json::json!([{
         "operationName": serde_json::Value::Null,
         "variables": { "query": keyword },
@@ -259,12 +273,19 @@ async fn search_one(
     if let Some(errors) = envelope.errors {
         anyhow::bail!("docs2 GraphQL 返回错误：{errors}");
     }
-    Ok(envelope
-        .data
-        .context("docs2 GraphQL 响应缺少 data")?
-        .pages
-        .search
-        .results)
+    let pages = envelope.data.context("docs2 GraphQL 响应缺少 data")?.pages;
+    let ids = pages
+        .list
+        .into_iter()
+        .map(|page| ((page.locale, page.path), page.id))
+        .collect::<HashMap<_, _>>();
+    let mut results = pages.search.results;
+    for result in &mut results {
+        result.page_id = ids
+            .get(&(result.locale.clone(), result.path.clone()))
+            .copied();
+    }
+    Ok(results)
 }
 
 fn docs_url(base_url: &str, locale: &str, path: &str) -> String {
@@ -289,6 +310,10 @@ fn encode_segment(segment: &str) -> String {
 
 fn search_output(docs_base_url: &str, result: &PageSearchResult) -> WikiSearchOutput {
     WikiSearchOutput {
+        id: result
+            .page_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| result.search_id.clone()),
         title: strip_html_tags(&result.title),
         url: docs_url(docs_base_url, &result.locale, &result.path),
     }
@@ -349,6 +374,7 @@ mod tests {
     #[test]
     fn renders_search_results_with_decoded_url() {
         let results = vec![WikiSearchOutput {
+            id: "348".to_owned(),
             title: "接入局域网本地大模型".to_owned(),
             url: docs_url(
                 "https://docs2.listenai.com",
@@ -359,6 +385,7 @@ mod tests {
 
         let output = render_search_results(&results);
         assert!(output.contains("找到 1 条文档"));
+        assert!(output.contains("[348] 接入局域网本地大模型"));
         assert!(output.contains("https://docs2.listenai.com/zh/云端开发/LSPlatform/编排应用介绍/接入第三方大模型/接入局域网本地大模型"));
         assert!(!output.trim_start().starts_with('['));
         assert!(output.contains("使用 --json 输出 JSON。"));
@@ -368,6 +395,7 @@ mod tests {
     fn renders_at_most_twenty_search_results() {
         let results = (1..=21)
             .map(|index| WikiSearchOutput {
+                id: index.to_string(),
                 title: format!("文档{index}"),
                 url: format!("https://docs2.listenai.com/zh/%E6%96%87%E6%A1%A3{index}"),
             })
@@ -375,8 +403,8 @@ mod tests {
 
         let output = render_search_results(&results);
         assert!(output.contains("找到 21 条文档，展示前 20 条："));
-        assert!(output.contains("20. 文档20"));
-        assert!(!output.contains("21. 文档21"));
+        assert!(output.contains("20. [20] 文档20"));
+        assert!(!output.contains("21. [21] 文档21"));
         assert!(output.contains("使用 --json 输出全部 JSON。"));
     }
 
@@ -387,6 +415,7 @@ mod tests {
                 keyword: "第三方".to_owned(),
                 results: (1..=6)
                     .map(|index| WikiSearchOutput {
+                        id: index.to_string(),
                         title: format!("第三方文档{index}"),
                         url: format!(
                             "https://docs2.listenai.com/zh/%E7%AC%AC%E4%B8%89%E6%96%B9{index}"
@@ -397,6 +426,7 @@ mod tests {
             WikiSearchGroup {
                 keyword: "CSK".to_owned(),
                 results: vec![WikiSearchOutput {
+                    id: "100".to_owned(),
                     title: "CSK文档".to_owned(),
                     url: "https://docs2.listenai.com/zh/CSK".to_owned(),
                 }],
@@ -406,10 +436,10 @@ mod tests {
         let output = render_search_groups(&groups);
         assert!(output.contains("按 2 个搜索词展示相关文档，每个最多展示 5 条："));
         assert!(output.contains("=== 第三方（6 条，展示前 5 条） ==="));
-        assert!(output.contains("5. 第三方文档5"));
-        assert!(!output.contains("6. 第三方文档6"));
+        assert!(output.contains("5. [5] 第三方文档5"));
+        assert!(!output.contains("6. [6] 第三方文档6"));
         assert!(output.contains("https://docs2.listenai.com/zh/第三方1"));
         assert!(output.contains("=== CSK（1 条） ==="));
-        assert!(output.contains("1. CSK文档"));
+        assert!(output.contains("1. [100] CSK文档"));
     }
 }

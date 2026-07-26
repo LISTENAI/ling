@@ -22,6 +22,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 const AUDIO_CHUNK_BYTES: usize = 1280 * 4; // 160ms of 16k 16bit mono PCM
 const AUDIO_CHUNK_PACE_MS: u64 = 40; // 4x realtime; blasting breaks server-side session init
 const LLM_WS_VERSION: &str = "2.0";
+const SESSION_READY_GRACE: Duration = Duration::from_millis(1_000);
 const TEXT_STREAM_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone)]
@@ -346,6 +347,7 @@ fn render_result(value: &Value) -> String {
             if let Some(text) = string_at(
                 value,
                 &[
+                    "/data/nlp/text",
                     "/data/intent/answer/text",
                     "/data/answer/text",
                     "/data/text",
@@ -362,6 +364,7 @@ fn render_result(value: &Value) -> String {
             Some(info) => format!("VAD：{info}"),
             None => "VAD 结果".to_owned(),
         },
+        "setting" => "会话配置已下发".to_owned(),
         other => format!(
             "{other} 结果：{}",
             value.get("data").map(compact).unwrap_or_default()
@@ -677,6 +680,67 @@ pub async fn interaction_request(
         body: start,
     });
 
+    // `started` 表示服务端已经完成会话初始化。尤其是自定义 Agent 首次冷启动
+    // 时，若在该确认帧前发送文本和 end，服务端可能直接结束会话而不把消息
+    // 交给 Agent。先等待确认，也让音频首包和文本请求遵循相同的协议时序。
+    loop {
+        match ws.next().await {
+            Some(Ok(Message::Text(body))) => {
+                let frame = serde_json::from_str::<Value>(&body).ok();
+                let action = frame
+                    .as_ref()
+                    .and_then(|frame| frame.get("action"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                let error_code = frame
+                    .as_ref()
+                    .and_then(|frame| frame.get("code"))
+                    .map(|code| {
+                        code.as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| code.to_string())
+                    });
+                let error_desc = frame
+                    .as_ref()
+                    .and_then(|frame| frame.get("desc"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                on_event(RequestEvent::Frame {
+                    direction: RequestDirection::Downstream,
+                    body,
+                });
+                match action.as_deref() {
+                    Some("started") => break,
+                    Some("error") => {
+                        bail!(
+                            "创建会话失败：code={} {}",
+                            error_code.unwrap_or_else(|| "-".into()),
+                            error_desc.unwrap_or_else(|| "-".into())
+                        );
+                    }
+                    Some("finish") => bail!("服务端在会话开始前结束了请求"),
+                    _ => continue,
+                }
+            }
+            Some(Ok(Message::Binary(bytes))) => on_event(RequestEvent::Binary {
+                direction: RequestDirection::Downstream,
+                bytes: bytes.len(),
+                text: None,
+            }),
+            Some(Ok(Message::Close(frame))) => {
+                bail!("链路在会话开始前关闭：{frame:?}")
+            }
+            Some(Ok(_)) => continue,
+            Some(Err(err)) => return Err(anyhow!(err).context("等待会话开始响应失败")),
+            None => bail!("链路未返回会话开始响应"),
+        }
+    }
+
+    // `started` 只确认 interaction 会话已创建；自定义 Agent 的 bundle 仍可能
+    // 正在冷启动，且当前协议没有单独的 agent-ready 帧。给 host 一个很短的
+    // 就绪窗口，避免文本首包在 onConnect 前到达后被丢弃。
+    tokio::time::sleep(SESSION_READY_GRACE).await;
+
     // 上传数据
     match input {
         RequestInput::Text(text) => {
@@ -878,6 +942,22 @@ mod tests {
                 "16:42:03.500"
             ),
             "[16:42:03.500] ↓ 回复文本 URL：https://example.com/text"
+        );
+        assert_eq!(
+            render_frame_at(
+                &RequestDirection::Downstream,
+                r#"{"action":"result","data":{"sub":"nlp","nlp_origin":"reply_text","nlp":{"text":"pong"}}}"#,
+                "16:42:03.750"
+            ),
+            "[16:42:03.750] ↓ 回复：pong"
+        );
+        assert_eq!(
+            render_frame_at(
+                &RequestDirection::Downstream,
+                r#"{"action":"result","data":{"sub":"setting","theme":{"frontend":{}}}}"#,
+                "16:42:03.900"
+            ),
+            "[16:42:03.900] ↓ 会话配置已下发"
         );
     }
 
