@@ -179,12 +179,17 @@ ling app --product-id <product_id> request \
   --product-secret '<product_secret>' --text 你好 --output-tts reply.mp3
 
 ling app trace <sid>
-ling app trace <sid> --full
-ling app trace <sid> --hours 2 --json
+ling app trace <sid> --verbose
+ling app trace <sid> --json
+ling app trace <sid> --hours 2
 ```
 
 `request` 不提供 `--json`。默认输出人类可读时间线；`--verbose` 输出带方向的
-协议帧。`trace --full` 可能包含完整请求上下文和工具结果。
+协议帧。
+
+`trace` 默认提炼关键时序事件。默认概览不足、需要查看未识别事件或逐步交互时
+使用 `--verbose`；需要核对服务端原始字段或机器处理时使用 `--json`。两种详细
+输出都可能包含完整请求上下文和工具结果，展示前先脱敏。
 
 ## Agent 项目
 

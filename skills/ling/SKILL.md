@@ -42,8 +42,8 @@ description: ListenAI（聆思）平台本地 CLI 工具，覆盖安装与账号
 - Product Secret 只用于设备绑定和 `ling app request`。让用户本人从平台
   应用详情获取，并在自己的终端输入。
 - 可建议用户临时设置 `LING_PRODUCT_SECRET`，避免 Secret 进入 shell 历史。
-- `inspect`、`request --verbose` 和 `trace --full` 可能包含密钥、对话、
-  请求上下文或工具结果；展示和转述前先脱敏。
+- `inspect`、`request --verbose` 和 `trace --verbose/--json` 可能包含
+  密钥、对话、请求上下文或工具结果；展示和转述前先脱敏。
 
 ## 应用标识
 
@@ -78,8 +78,12 @@ ling app --product-id <product_id> request \
 - `--output-tts <file>` 保存首个 TTS 音频。
 - 请求显式设置 `llm_ws_version=2.0`；`/v1/interaction` 是设备入口路径，
   不代表内部 LLM 链路版本。
-- 使用返回的 SID 执行 `ling app trace <sid>`；只有旧服务端不支持 SID
-  直查时才扫描请求记录。
+- 使用返回的 SID 执行 `ling app trace <sid>`，先阅读默认的人类可读时序概览。
+- 概览不足以定位问题、需要检查未被概览识别的新事件或每一步交互时，改用
+  `ling app trace <sid> --verbose`。
+- 只有需要核对服务端原始字段、诊断解析歧义或保留机器可读证据时，才使用
+  `ling app trace <sid> --json`。不要把未经脱敏的详细日志直接展示给用户。
+- 只有旧服务端不支持 SID 直查时才扫描请求记录。
 
 ## 真实设备绑定
 
