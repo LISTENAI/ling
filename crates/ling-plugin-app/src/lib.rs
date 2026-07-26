@@ -1,4 +1,5 @@
 pub mod config_view;
+pub mod management;
 pub mod records;
 pub mod request;
 
@@ -25,6 +26,98 @@ pub async fn list_projects(
     }
 
     get_json(url, api_key).await
+}
+
+pub async fn list_all_projects(
+    api_base_url: &str,
+    api_key: &str,
+    service_type: Option<&str>,
+) -> Result<Vec<Value>> {
+    let mut page = 1;
+    let mut projects = Vec::new();
+    loop {
+        let output = list_projects(api_base_url, api_key, page, 100, service_type).await?;
+        let batch = output
+            .get("data")
+            .and_then(Value::as_array)
+            .context("app list 响应缺少 data 数组")?;
+        let batch_len = batch.len();
+        projects.extend(batch.iter().cloned());
+        let total = output
+            .get("total")
+            .and_then(Value::as_u64)
+            .unwrap_or(projects.len() as u64);
+        if batch_len == 0 || projects.len() as u64 >= total {
+            break;
+        }
+        page += 1;
+    }
+    Ok(projects)
+}
+
+pub async fn list_product_projects(
+    api_base_url: &str,
+    api_key: &str,
+    page: u32,
+    page_size: u32,
+    service_type: Option<&str>,
+) -> Result<Value> {
+    let projects = list_all_projects(api_base_url, api_key, service_type).await?;
+    product_projects_page(projects, page, page_size)
+}
+
+fn product_projects_page(projects: Vec<Value>, page: u32, page_size: u32) -> Result<Value> {
+    if page == 0 {
+        anyhow::bail!("page 必须大于等于 1");
+    }
+    if !(1..=100).contains(&page_size) {
+        anyhow::bail!("page-size 必须在 1 到 100 之间");
+    }
+    let projects = projects
+        .into_iter()
+        .filter(has_product_id)
+        .collect::<Vec<_>>();
+    let total = projects.len();
+    let start = ((page - 1) as usize).saturating_mul(page_size as usize);
+    let data = projects
+        .into_iter()
+        .skip(start)
+        .take(page_size as usize)
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "code": "SUCCESS",
+        "message": "请求成功",
+        "data": data,
+        "page": page,
+        "pageSize": page_size,
+        "total": total,
+    }))
+}
+
+pub fn has_product_id(project: &Value) -> bool {
+    project_product_id(project).is_some()
+}
+
+pub fn project_product_id(project: &Value) -> Option<String> {
+    string_field(Some(project), "product_id").or_else(|| {
+        project
+            .get("product")
+            .and_then(|product| string_field(Some(product), "id"))
+    })
+}
+
+pub fn project_app_id(project: &Value) -> Option<String> {
+    string_field(Some(project), "app_id").or_else(|| {
+        project
+            .get("apps")
+            .and_then(Value::as_array)
+            .and_then(|apps| apps.first())
+            .and_then(|app| string_field(Some(app), "id"))
+    })
+}
+
+pub fn project_id(project: &Value) -> Option<String> {
+    string_field(Some(project), "id")
 }
 
 pub async fn inspect_product(api_base_url: &str, api_key: &str, product_id: &str) -> Result<Value> {
@@ -133,6 +226,13 @@ pub fn render_project_list(value: &Value) -> Result<String> {
 }
 
 pub fn render_project_inspect(value: &Value) -> Result<String> {
+    render_project_inspect_with_mcp_count(value, None)
+}
+
+pub fn render_project_inspect_with_mcp_count(
+    value: &Value,
+    resolved_mcp_count: Option<usize>,
+) -> Result<String> {
     let project = value.get("data").unwrap_or(value);
     let app = project
         .get("apps")
@@ -163,8 +263,13 @@ pub fn render_project_inspect(value: &Value) -> Result<String> {
         render_key_values(vec![
             ("项目 ID", field(project, "id")),
             ("应用 ID", option_field(app, "id")),
-            ("产品 ID", field(project, "product_id")),
-            ("密钥", product_secret(product)),
+            (
+                "产品 ID",
+                string_field(Some(project), "product_id")
+                    .or_else(|| product.and_then(|value| string_field(Some(value), "id")))
+                    .unwrap_or_else(|| "-".to_owned()),
+            ),
+            ("产品密钥", product_secret(product)),
             ("计费", field(project, "cost_type")),
             ("创建人", field(project, "created_by")),
             ("创建时间", format_created_at(&field(project, "created_at"))),
@@ -219,7 +324,13 @@ pub fn render_project_inspect(value: &Value) -> Result<String> {
             ("知识库", array_len(feature, "knowledge").to_string()),
             ("专业词汇", array_len(feature, "hotwords").to_string()),
             ("提示语", array_len(config, "prompt_tone_texts").to_string()),
-            ("MCP 服务器", mcp_server_count(config, feature).to_string()),
+            (
+                "MCP 服务器",
+                resolved_mcp_count
+                    .or_else(|| mcp_server_count(config, feature))
+                    .map(|count| count.to_string())
+                    .unwrap_or_else(|| "-".to_owned()),
+            ),
         ]),
     );
 
@@ -377,16 +488,16 @@ fn deploy_title(deploy_type: &str) -> &'static str {
     }
 }
 
-fn mcp_server_count(config: Option<&Value>, feature: Option<&Value>) -> usize {
+fn mcp_server_count(config: Option<&Value>, feature: Option<&Value>) -> Option<usize> {
     [
-        array_len(config, "mcp_servers"),
-        array_len(config, "mcpServers"),
-        array_len(feature, "mcp_servers"),
-        array_len(feature, "mcpServers"),
+        (config, "mcp_servers"),
+        (config, "mcpServers"),
+        (feature, "mcp_servers"),
+        (feature, "mcpServers"),
     ]
     .into_iter()
+    .filter_map(|(value, key)| value?.get(key)?.as_array().map(Vec::len))
     .max()
-    .unwrap_or(0)
 }
 
 fn main_model(app: Option<&Value>, feature: Option<&Value>) -> String {
@@ -474,11 +585,10 @@ fn wake_word(config: Option<&Value>) -> String {
 }
 
 fn product_secret(product: Option<&Value>) -> String {
-    first_non_empty(vec![
-        string_field(product, "secret"),
-        string_field(product, "previewSecret"),
-    ])
-    .unwrap_or_else(|| "-".to_owned())
+    string_field(product, "secret")
+        .or_else(|| string_field(product, "previewSecret"))
+        .or_else(|| string_field(product, "preview_secret"))
+        .unwrap_or_else(|| "-".to_owned())
 }
 
 #[cfg(test)]
@@ -570,6 +680,7 @@ mod tests {
         let summary = render_project_inspect(&value).unwrap();
         assert!(summary.contains("配置应用"));
         assert!(summary.contains("▸ 概览"));
+        assert!(summary.contains("产品密钥"));
         assert!(summary.contains("4bffecaf-3119-4e24-add2-284228c3f845"));
         assert!(!summary.contains("4bffe*******3f845"));
         assert!(summary.contains("小聆老师"));
@@ -579,5 +690,70 @@ mod tests {
         assert!(summary.contains("ls-xiaoling"));
         assert!(summary.contains("图片内容理解"));
         assert!(summary.contains("Use --json for the full raw response."));
+    }
+
+    #[test]
+    fn inspect_uses_resolved_mcp_count_and_does_not_invent_zero() {
+        let value = serde_json::json!({
+            "data": {
+                "name": "测试应用",
+                "apps": [{"config": {"llm_feature": {}}}]
+            }
+        });
+
+        let unresolved = render_project_inspect(&value).unwrap();
+        assert!(unresolved.contains("│ MCP 服务器 │ -"));
+
+        let resolved = render_project_inspect_with_mcp_count(&value, Some(9)).unwrap();
+        assert!(resolved.contains("│ MCP 服务器 │ 9"));
+    }
+
+    #[test]
+    fn inspect_secret_prefers_full_value_and_falls_back_to_preview() {
+        let full = serde_json::json!({
+            "secret": "full-product-secret",
+            "previewSecret": "full-*******-secret"
+        });
+        assert_eq!(product_secret(Some(&full)), "full-product-secret");
+
+        let preview = serde_json::json!({"preview_secret": "preview-*******-secret"});
+        assert_eq!(product_secret(Some(&preview)), "preview-*******-secret");
+    }
+
+    #[test]
+    fn product_project_page_filters_before_paginating() {
+        let projects = vec![
+            serde_json::json!({"id": "project-api", "product_id": ""}),
+            serde_json::json!({"id": "project-1", "product_id": "product-1"}),
+            serde_json::json!({"id": "project-api-2"}),
+            serde_json::json!({"id": "project-2", "product": {"id": "product-2"}}),
+        ];
+        let page = product_projects_page(projects, 1, 1).unwrap();
+        assert_eq!(page["total"], 2);
+        assert_eq!(page["data"][0]["id"], "project-1");
+
+        let page = product_projects_page(
+            vec![
+                serde_json::json!({"id": "project-api", "product_id": ""}),
+                serde_json::json!({"id": "project-1", "product_id": "product-1"}),
+                serde_json::json!({"id": "project-2", "product": {"id": "product-2"}}),
+            ],
+            2,
+            1,
+        )
+        .unwrap();
+        assert_eq!(page["data"][0]["id"], "project-2");
+    }
+
+    #[test]
+    fn reads_all_supported_project_identifiers() {
+        let project = serde_json::json!({
+            "id": "project-1",
+            "app_id": "app-1",
+            "product_id": "product-1"
+        });
+        assert_eq!(project_id(&project).as_deref(), Some("project-1"));
+        assert_eq!(project_app_id(&project).as_deref(), Some("app-1"));
+        assert_eq!(project_product_id(&project).as_deref(), Some("product-1"));
     }
 }

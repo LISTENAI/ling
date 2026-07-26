@@ -4,9 +4,38 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Local, SecondsFormat, TimeZone, Utc};
 
 use serde_json::{json, Value};
+use std::time::Duration as StdDuration;
 
 const PAGE_LIMIT: u32 = 50;
 const MAX_PAGES: u32 = 20;
+const REQUEST_TIMEOUT: StdDuration = StdDuration::from_secs(15);
+
+/// 按 SID 直接查询 Agent 执行日志。旧服务端没有该路由时返回 None。
+pub async fn query_agent_logs(
+    api_base_url: &str,
+    api_key: &str,
+    sid: &str,
+) -> Result<Option<Value>> {
+    let mut url = ling_core::http_url(api_base_url, "/v1/log/agent")?;
+    url.query_pairs_mut().append_pair("sid", sid);
+    let response = ling_core::client_with_timeout(REQUEST_TIMEOUT)?
+        .get(url)
+        .header("authorization", ling_core::bearer(api_key))
+        .send()
+        .await
+        .context("按 SID 查询 Agent 日志失败")?;
+
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("按 SID 查询 Agent 日志失败：HTTP {status} {body}");
+    }
+    let value = serde_json::from_str(&body).context("Agent 日志响应不是合法 JSON")?;
+    Ok(Some(value))
+}
 
 /// 查询一页请求记录。start/end 为 RFC3339 UTC 字符串。
 pub async fn query_requests(
@@ -18,7 +47,7 @@ pub async fn query_requests(
     limit: u32,
 ) -> Result<Value> {
     let url = ling_core::http_url(api_base_url, "/v1/requests")?;
-    let response = ling_core::client()?
+    let response = ling_core::client_with_timeout(REQUEST_TIMEOUT)?
         .post(url)
         .header("authorization", ling_core::bearer(api_key))
         .json(&json!({
@@ -36,6 +65,30 @@ pub async fn query_requests(
         bail!("查询请求记录失败：HTTP {status} {body}");
     }
     serde_json::from_str(&body).context("请求记录响应不是合法 JSON")
+}
+
+pub fn render_agent_logs(value: &Value) -> Result<String> {
+    let logs = value
+        .get("data")
+        .and_then(Value::as_array)
+        .context("Agent 日志响应缺少 data 数组")?;
+    let mut output = String::new();
+    for log in logs {
+        let timestamp = log.get("timestamp").and_then(Value::as_str).unwrap_or("-");
+        let content = log.get("content").and_then(Value::as_str).unwrap_or("-");
+        output.push_str(timestamp);
+        output.push_str("  ");
+        output.push_str(content);
+        output.push('\n');
+    }
+    if value
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        output.push_str("注意：服务端日志结果已截断。\n");
+    }
+    Ok(output.trim_end().to_owned())
 }
 
 #[derive(Debug)]
@@ -97,7 +150,7 @@ pub fn miss_message(sid: &str, hours: u32, truncated: bool) -> String {
     if truncated {
         output.push_str("\n注意：该时间窗内记录较多，扫描被截断；可用 --hours 缩小范围。");
     }
-    output.push_str("\n提示：可用 --hours 调整检索时间窗（默认 24）。");
+    output.push_str("\n提示：可用 --hours 调整检索时间窗（默认 168，即 7 天）。");
     output
 }
 
@@ -486,6 +539,22 @@ mod tests {
             "99e2e08c-fff6-4bc5-9cc8-c39edb4b52c4"
         ));
         assert!(record_matches_sid(&sample_record(), "192977817"));
+    }
+
+    #[test]
+    fn renders_agent_logs_in_server_order() {
+        let output = json!({
+            "data": [
+                {"timestamp": "2026-07-26T16:37:21.344+08:00", "content": "llm connecting version=2.0"},
+                {"timestamp": "2026-07-26T16:37:21.500+08:00", "content": "connected"}
+            ],
+            "truncated": true
+        });
+        let rendered = render_agent_logs(&output).unwrap();
+        let first = rendered.find("llm connecting version=2.0").unwrap();
+        let second = rendered.find("connected").unwrap();
+        assert!(first < second);
+        assert!(rendered.contains("服务端日志结果已截断"));
     }
 
     #[test]

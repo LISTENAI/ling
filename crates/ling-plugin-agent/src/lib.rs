@@ -58,9 +58,6 @@ pub struct DeployArgs {
     /// Product ID or App ID to deploy to.
     #[arg(long = "product-id")]
     pub product_id: String,
-    /// Platform API endpoint. Defaults to the ling API base URL.
-    #[arg(long)]
-    pub endpoint: Option<String>,
     /// API key. Defaults to LING_API_KEY, saved ling config, or LISTENAI_API_KEY.
     #[arg(long = "api-key")]
     pub api_key: Option<String>,
@@ -987,13 +984,7 @@ fn resolve_deploy_options(ctx: &AgentContext, args: DeployArgs) -> Result<Deploy
         bail!("product-id required");
     }
 
-    let endpoint = args
-        .endpoint
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(&ctx.api_base_url)
-        .to_string();
+    let endpoint = ctx.api_base_url.trim().to_string();
     let raw_version = args.version.as_deref().unwrap_or_default().trim();
     if raw_version.is_empty() {
         bail!("version required: pass --version vX.Y.Z");
@@ -1674,7 +1665,6 @@ mod tests {
             DeployArgs {
                 bundle: "dist/agent.js".to_string(),
                 product_id: "prod_dev_local".to_string(),
-                endpoint: None,
                 api_key: None,
                 version: Some("0.2.0".to_string()),
                 version_name: None,

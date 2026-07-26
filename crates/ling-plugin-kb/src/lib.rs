@@ -24,12 +24,6 @@ pub async fn create(api_base_url: &str, api_key: &str, index_name: &str) -> Resu
     .await
 }
 
-/// 删除知识库（DELETE /v1/knowledge-bases/{index_id}）。
-pub async fn delete(api_base_url: &str, api_key: &str, index_id: &str) -> Result<Value> {
-    let url = kb_url(api_base_url, index_id, &[])?;
-    request(Method::DELETE, url, api_key, None).await
-}
-
 /// 文档列表（GET /v1/knowledge-bases/{index_id}/documents）。
 pub async fn list_documents(
     api_base_url: &str,
@@ -62,26 +56,6 @@ pub async fn add_document(
             "documents": [{"doc_name": doc_name, "doc_url": doc_url}],
             "text_splitter": {"method": "auto"}
         })),
-    )
-    .await
-}
-
-/// 删除文档（DELETE /v1/knowledge-bases/{index_id}/documents，body doc_ids）。
-pub async fn delete_documents(
-    api_base_url: &str,
-    api_key: &str,
-    index_id: &str,
-    doc_ids: &[String],
-) -> Result<Value> {
-    if doc_ids.is_empty() {
-        bail!("请至少提供一个文档 ID");
-    }
-    let url = kb_url(api_base_url, index_id, &["documents"])?;
-    request(
-        Method::DELETE,
-        url,
-        api_key,
-        Some(json!({"doc_ids": doc_ids})),
     )
     .await
 }

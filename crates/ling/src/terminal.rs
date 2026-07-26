@@ -17,6 +17,41 @@ pub struct TerminalEncoding {
 #[cfg(not(windows))]
 pub struct TerminalEncoding;
 
+#[cfg(unix)]
+pub fn width() -> Option<usize> {
+    let mut size = std::mem::MaybeUninit::<libc::winsize>::zeroed();
+    // SAFETY: TIOCGWINSZ only writes a winsize value to the valid pointer supplied here.
+    let result = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, size.as_mut_ptr()) };
+    if result != 0 {
+        return None;
+    }
+    // SAFETY: a successful TIOCGWINSZ call initialized the winsize value.
+    let columns = unsafe { size.assume_init() }.ws_col;
+    (columns > 0).then_some(columns as usize)
+}
+
+#[cfg(windows)]
+pub fn width() -> Option<usize> {
+    use windows_sys::Win32::System::Console::{
+        GetConsoleScreenBufferInfo, GetStdHandle, CONSOLE_SCREEN_BUFFER_INFO, STD_OUTPUT_HANDLE,
+    };
+
+    unsafe {
+        let handle = GetStdHandle(STD_OUTPUT_HANDLE);
+        let mut info = std::mem::zeroed::<CONSOLE_SCREEN_BUFFER_INFO>();
+        if GetConsoleScreenBufferInfo(handle, &mut info) == 0 {
+            return None;
+        }
+        let columns = info.srWindow.Right - info.srWindow.Left + 1;
+        (columns > 0).then_some(columns as usize)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn width() -> Option<usize> {
+    None
+}
+
 #[cfg(windows)]
 impl TerminalEncoding {
     fn set_utf8() -> Self {
@@ -72,5 +107,10 @@ mod tests {
     #[test]
     fn init_is_noop_guard_on_non_windows() {
         let _guard = init();
+    }
+
+    #[test]
+    fn reported_terminal_width_is_positive() {
+        assert!(width().is_none_or(|width| width > 0));
     }
 }

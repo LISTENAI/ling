@@ -12,8 +12,6 @@ use url::Url;
 
 /// 默认 API 地址（生产环境）。
 pub const DEFAULT_API_BASE_URL: &str = "https://api.listenai.com";
-/// 默认平台控制台地址（生产环境），用于 /platform-v1/* 等接口。
-pub const DEFAULT_PLATFORM_BASE_URL: &str = "https://platform.listenai.com";
 
 /// 把 base url 与路径拼接为 HTTP(S) URL。
 pub fn http_url(base_url: &str, path: &str) -> Result<Url> {

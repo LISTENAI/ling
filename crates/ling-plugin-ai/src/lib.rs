@@ -182,9 +182,9 @@ async fn download_audio(audio_url: &str, path: &Path) -> Result<(String, u64)> {
     Ok((path.display().to_string(), bytes.len() as u64))
 }
 
-/// 获取发音人列表（GET {platform_base}/platform-v1/tts/vcn，Bearer API Key）。
-pub async fn list_vcns(platform_base_url: &str, api_key: &str) -> Result<Value> {
-    let url = ling_core::http_url(platform_base_url, "platform-v1/tts/vcn")?;
+/// 获取发音人列表（GET {api_base}/v1/tts/vcn，Bearer API Key）。
+pub async fn list_vcns(api_base_url: &str, api_key: &str) -> Result<Value> {
+    let url = ling_core::http_url(api_base_url, "/v1/tts/vcn")?;
     let response = ling_core::client()?
         .get(url)
         .header(header::AUTHORIZATION, ling_core::bearer(api_key))
@@ -236,7 +236,7 @@ pub struct AsrOptions {
     pub asr_vad: bool,
 }
 
-/// 通过 wss /v1/asr（云云对接，Bearer API Key）识别一段 16k 16bit LE 单声道 PCM。
+/// 通过 wss /v2/asr（云云对接，Bearer API Key）识别一段 16k 16bit LE 单声道 PCM。
 /// on_partial 用于输出中间识别结果；返回最终识别文本。
 pub async fn asr(
     api_base_url: &str,
@@ -258,7 +258,7 @@ pub async fn asr(
     }
     let param = base64::engine::general_purpose::STANDARD.encode(Value::Object(param).to_string());
 
-    let mut url = ling_core::ws_url(api_base_url, "/v1/asr")?;
+    let mut url = ling_core::ws_url(api_base_url, "/v2/asr")?;
     // 服务端不对 query 做 urldecode，base64 需原样拼接（不能百分号转义 = / +）
     url.set_query(Some(&format!("param={param}")));
 

@@ -8,14 +8,19 @@ mod v1_api;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand};
-use ling_plugin_app::config_view;
-use ling_plugin_app::request::{RequestEvent, RequestInput, RequestOptions};
+use ling_plugin_app::request::{RequestDirection, RequestEvent, RequestInput, RequestOptions};
+use ling_plugin_app::{config_view, management};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 const DOCS_BASE_URL: &str = "https://docs2.listenai.com";
+const PLATFORM_APP_CONFIG_URL: &str = "https://platform.listenai.com/appConfig";
+const PLATFORM_KB_URL: &str = "https://platform.listenai.com/datasets";
 
 #[derive(Debug, Parser)]
 #[command(name = "ling", version, about = "ListenAI local CLI")]
@@ -26,13 +31,6 @@ struct Cli {
         default_value = ling_core::DEFAULT_API_BASE_URL
     )]
     api_base_url: String,
-
-    #[arg(
-        long,
-        env = "LING_PLATFORM_BASE_URL",
-        default_value = ling_core::DEFAULT_PLATFORM_BASE_URL
-    )]
-    platform_base_url: String,
 
     #[command(subcommand)]
     command: Command,
@@ -90,7 +88,7 @@ enum AiCommand {
     Chat(ChatArgs),
     /// Synthesize speech, print the audio URL (wss /v1/tts/stream).
     Tts(TtsArgs),
-    /// Recognize speech from a PCM/WAV file (wss /v1/asr).
+    /// Recognize speech from a PCM/WAV file (wss /v2/asr).
     Asr(AsrArgs),
     /// Generate a wakeword resource (ROMFS bin).
     Wakeword(WakewordArgs),
@@ -203,16 +201,53 @@ struct WakewordArgs {
 
 #[derive(Debug, Args)]
 struct AppArgs {
-    /// Target app (product id). Defaults to product_id in listenai.toml.
-    /// Can be placed right after `app` or after the action.
-    #[arg(long = "product-id", global = true)]
+    /// Target application by Product ID. Defaults to product_id in listenai.toml.
+    #[arg(
+        long = "product-id",
+        global = true,
+        conflicts_with_all = ["project_id", "app_id"]
+    )]
     product_id: Option<String>,
+    /// Target application directly by Project ID.
+    #[arg(
+        long = "project-id",
+        global = true,
+        conflicts_with_all = ["product_id", "app_id"]
+    )]
+    project_id: Option<String>,
+    /// Target application by App ID.
+    #[arg(
+        long = "app-id",
+        global = true,
+        conflicts_with_all = ["product_id", "project_id"]
+    )]
+    app_id: Option<String>,
     #[command(subcommand)]
     command: AppCommand,
 }
 
+#[derive(Debug, Clone, Default)]
+struct AppSelector {
+    product_id: Option<String>,
+    project_id: Option<String>,
+    app_id: Option<String>,
+}
+
+#[derive(Debug)]
+struct ResolvedApp {
+    api_key: String,
+    product_id: String,
+    project_id: String,
+}
+
 #[derive(Debug, Subcommand)]
 enum AppCommand {
+    /// Show the server-side Ling CLI management API capabilities.
+    Capabilities {
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
+    },
     /// List platform apps.
     List {
         #[arg(long, default_value_t = 1)]
@@ -229,9 +264,18 @@ enum AppCommand {
     Create {
         /// App name.
         name: String,
+        /// Application scenario description.
+        #[arg(long)]
+        description: Option<String>,
+        /// Initial application template id.
+        #[arg(long = "template-id")]
+        template_id: u64,
         /// Access mode: managed (official pipeline) or custom.
         #[arg(long, value_parser = ["managed", "custom"], default_value = "managed")]
         mode: String,
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
     },
     /// Scaffold a local agent project and link it to a platform app.
     Init(InitArgs),
@@ -250,17 +294,19 @@ enum AppCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Send a simulated request through the cloud link and print all frames.
+    /// Open the web workflow for deleting an app.
+    Delete,
+    /// Send a simulated request and show a bidirectional event timeline.
     Request(RequestArgs),
     /// Look up an existing request record by SID.
     Trace {
         /// SID printed by `ling app request` or found in link frames.
         sid: String,
-        /// How many hours back to search (default 24).
-        #[arg(long, default_value_t = 24)]
+        /// How many hours back to search (default 168 / seven days).
+        #[arg(long, default_value_t = 168)]
         hours: u32,
         /// Show the full request context and tool details.
-        #[arg(long)]
+        #[arg(long, visible_alias = "verbose")]
         full: bool,
         /// Print the raw matching records as JSON.
         #[arg(long)]
@@ -290,6 +336,8 @@ enum AppCommand {
     Tone(ToneArgs),
     /// MCP server configuration.
     Mcp(McpArgs),
+    /// Agent prompt, model access, and interaction configuration.
+    Config(ConfigArgs),
 }
 
 #[derive(Debug, Args)]
@@ -300,6 +348,13 @@ struct InitArgs {
 
 #[derive(Debug, Args)]
 struct RequestArgs {
+    /// Product Secret used to authenticate this device-side request.
+    #[arg(
+        long = "product-secret",
+        env = "LING_PRODUCT_SECRET",
+        hide_env_values = true
+    )]
+    product_secret: Option<String>,
     /// Send a text utterance.
     #[arg(long, conflicts_with = "file", required_unless_present = "file")]
     text: Option<String>,
@@ -312,6 +367,12 @@ struct RequestArgs {
     /// App id for multi-app products (llm_app).
     #[arg(long = "llm-app")]
     llm_app: Option<String>,
+    /// Show every protocol frame with timestamp and direction.
+    #[arg(long)]
+    verbose: bool,
+    /// Download the first returned TTS URL to this file.
+    #[arg(long = "output-tts", value_name = "FILE")]
+    output_tts: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -328,10 +389,19 @@ enum DeviceCommand {
         #[arg(long)]
         json: bool,
     },
-    /// List imported device ids.
+    /// Open the web workflow for viewing imported device ids.
     List,
-    /// Import a device id.
-    Add { device_id: String },
+    /// Import one or more device ids, or upload a text file.
+    Add {
+        #[arg(required_unless_present = "file")]
+        device_ids: Vec<String>,
+        /// UTF-8 text file with one device id per line.
+        #[arg(long, conflicts_with = "device_ids")]
+        file: Option<PathBuf>,
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
+    },
     /// Check whether a device id is authorized.
     Query {
         device_id: String,
@@ -358,17 +428,67 @@ struct OtaArgs {
 #[derive(Debug, Subcommand)]
 enum OtaCommand {
     /// List OTA packages.
-    List,
+    List {
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+        #[arg(long = "page-size", default_value_t = 20)]
+        page_size: u32,
+        #[arg(long)]
+        json: bool,
+    },
     /// Upload an OTA package.
-    Upload { file: PathBuf },
+    Upload {
+        file: PathBuf,
+        #[arg(long)]
+        version: String,
+        #[arg(long = "version-number")]
+        version_number: u64,
+        #[arg(long = "ota-mode", value_parser = ["selectable", "mandatory"])]
+        ota_mode: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long = "minimum-version")]
+        minimum_version: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Show an OTA package.
-    Get { package_id: String },
+    Get {
+        package_id: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Edit an OTA package.
-    Edit { package_id: String },
-    /// Publish an OTA package.
+    Edit {
+        package_id: String,
+        #[arg(long)]
+        file: Option<PathBuf>,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long = "version-number")]
+        version_number: Option<u64>,
+        #[arg(long = "ota-mode", value_parser = ["selectable", "mandatory"])]
+        ota_mode: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long = "minimum-version")]
+        minimum_version: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Open the web workflow for formal OTA publication.
     Publish { package_id: String },
-    /// Delete an OTA package.
-    Delete { package_id: String },
+    /// Open the web workflow for revoking formal OTA publication.
+    Revoke { package_id: String },
+    /// Delete an unpublished OTA package.
+    Delete {
+        package_id: String,
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage the OTA test whitelist.
     Whitelist {
         #[command(subcommand)]
@@ -378,9 +498,24 @@ enum OtaCommand {
 
 #[derive(Debug, Subcommand)]
 enum OtaWhitelistCommand {
-    List,
-    Add { device_id: String },
-    Delete { device_id: String },
+    List {
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+        #[arg(long = "page-size", default_value_t = 20)]
+        page_size: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    Add {
+        device_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Delete {
+        device_id: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -393,19 +528,39 @@ struct RoleArgs {
 enum RoleCommand {
     /// List roles of the app.
     List {
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+        #[arg(long = "page-size", default_value_t = 20)]
+        page_size: u32,
         /// Print the raw JSON response.
         #[arg(long)]
         json: bool,
     },
     /// Add a role.
-    Add { name: String },
+    Add {
+        name: String,
+        #[command(flatten)]
+        input: JsonEditArgs,
+        #[arg(long)]
+        json: bool,
+    },
     /// Edit a role.
-    Edit { role_id: String },
-    /// Delete a role.
+    Edit {
+        role_id: String,
+        #[command(flatten)]
+        input: JsonEditArgs,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the web page for deleting a role.
     Delete { role_id: String },
     /// Set the default role.
     #[command(name = "set-default")]
-    SetDefault { role_id: String },
+    SetDefault {
+        role_id: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -418,14 +573,26 @@ struct AppKbArgs {
 enum AppKbCommand {
     /// List knowledge bases linked to the app.
     List {
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+        #[arg(long = "page-size", default_value_t = 20)]
+        page_size: u32,
         /// Print the raw JSON response.
         #[arg(long)]
         json: bool,
     },
     /// Link a knowledge base to the app.
-    Link { index_id: String },
+    Link {
+        index_id: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Unlink a knowledge base from the app.
-    Unlink { index_id: String },
+    Unlink {
+        index_id: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -438,16 +605,24 @@ struct LexiconArgs {
 enum LexiconCommand {
     /// List domain lexicon entries.
     List {
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+        #[arg(long = "page-size", default_value_t = 20)]
+        page_size: u32,
         /// Print the raw JSON response.
         #[arg(long)]
         json: bool,
     },
     /// Add a lexicon entry.
-    Add { word: String },
+    Add {
+        word: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Edit a lexicon entry.
     Edit { word: String },
-    /// Delete a lexicon entry.
-    Delete { word: String },
+    /// Show the web page for deleting a lexicon entry.
+    Delete { hotword_id: String },
 }
 
 #[derive(Debug, Args)]
@@ -460,6 +635,10 @@ struct ToneArgs {
 enum ToneCommand {
     /// Show the prompt tone table.
     Show {
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+        #[arg(long = "page-size", default_value_t = 20)]
+        page_size: u32,
         /// Print the raw JSON response.
         #[arg(long)]
         json: bool,
@@ -470,6 +649,14 @@ enum ToneCommand {
         set: Vec<String>,
         #[arg(long = "reset", value_name = "key")]
         reset: Vec<String>,
+        /// Restore every prompt tone to its default.
+        #[arg(long = "reset-all", conflicts_with_all = ["set", "reset", "file"])]
+        reset_all: bool,
+        /// Complete `texts` array or `{ "texts": [...] }` JSON file.
+        #[arg(long, conflicts_with_all = ["set", "reset", "reset_all"])]
+        file: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -482,17 +669,104 @@ struct McpArgs {
 #[derive(Debug, Subcommand)]
 enum McpCommand {
     /// List MCP servers.
-    List,
+    List {
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+        #[arg(long = "page-size", default_value_t = 20)]
+        page_size: u32,
+        #[arg(long)]
+        json: bool,
+    },
     /// Add an MCP server.
-    Add { name: String },
+    Add {
+        name: String,
+        #[arg(long = "server-id")]
+        server_id: String,
+        #[arg(long = "transport", value_parser = ["sse", "http"])]
+        transport_type: String,
+        #[arg(long)]
+        url: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        authorization: Option<String>,
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        enabled: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Edit an MCP server.
-    Edit { server_id: String },
-    /// Delete an MCP server.
+    Edit {
+        server_id: String,
+        #[command(flatten)]
+        input: JsonEditArgs,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the web page for deleting an MCP server.
     Delete { server_id: String },
     /// Enable an MCP server.
-    Enable { server_id: String },
+    Enable {
+        server_id: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Disable an MCP server.
-    Disable { server_id: String },
+    Disable {
+        server_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Args)]
+struct JsonEditArgs {
+    /// Set a JSON field, for example --set persona='"A helpful assistant"'.
+    #[arg(long = "set", value_name = "key=value", conflicts_with = "file")]
+    set: Vec<String>,
+    /// Read the request object from a JSON file.
+    #[arg(long, conflicts_with = "set")]
+    file: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct ConfigArgs {
+    #[command(subcommand)]
+    command: ConfigCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    /// Show the interaction mode, system prompt, and model access.
+    Show {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Update supported config keys with --set or a JSON object.
+    Edit {
+        #[command(flatten)]
+        input: JsonEditArgs,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Restore the default Agent model access.
+    #[command(name = "reset-model")]
+    ResetModel {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Test a model access configuration without saving it.
+    #[command(name = "test-model")]
+    TestModel {
+        #[arg(long)]
+        endpoint: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        authorization: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -524,11 +798,11 @@ enum KbCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Delete a knowledge base.
+    /// Show the web page for deleting a knowledge base.
     Delete {
         index_id: String,
-        /// Skip the confirmation prompt.
-        #[arg(long)]
+        /// Deprecated compatibility flag; deletion is web-only.
+        #[arg(long, hide = true)]
         yes: bool,
     },
     /// Manage documents inside a knowledge base.
@@ -573,7 +847,7 @@ enum KbDocCommand {
         #[arg(long)]
         url: String,
     },
-    /// Delete documents by id.
+    /// Show the web page for deleting documents.
     Delete {
         #[arg(required = true)]
         doc_ids: Vec<String>,
@@ -627,19 +901,14 @@ async fn main() -> ExitCode {
 /// 各 handler 共用的运行时上下文（从 Cli 顶层参数解构而来）。
 struct Ctx {
     api_base_url: String,
-    platform_base_url: String,
 }
 
 async fn run(cli: Cli) -> Result<ExitCode> {
     let Cli {
         api_base_url,
-        platform_base_url,
         command,
     } = cli;
-    let ctx = Ctx {
-        api_base_url,
-        platform_base_url,
-    };
+    let ctx = Ctx { api_base_url };
 
     match command {
         Command::Login(args) => {
@@ -756,7 +1025,7 @@ async fn tts_command(cli: &Ctx, args: TtsArgs) -> Result<()> {
     let api_key = resolve_api_key()?;
 
     if args.list_vcn {
-        let output = ling_plugin_ai::list_vcns(&cli.platform_base_url, &api_key).await?;
+        let output = ling_plugin_ai::list_vcns(&cli.api_base_url, &api_key).await?;
         if args.json {
             return print_json(&output);
         }
@@ -836,8 +1105,17 @@ async fn asr_command(api_base_url: &str, args: AsrArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
-    let product = args.product_id;
+    let selector = AppSelector {
+        product_id: args.product_id,
+        project_id: args.project_id,
+        app_id: args.app_id,
+    };
     match args.command {
+        AppCommand::Capabilities { json } => {
+            let api_key = resolve_api_key()?;
+            let output = management::capabilities(&cli.api_base_url, &api_key).await?;
+            print_management_result(&output, json)?;
+        }
         AppCommand::List {
             page,
             page_size,
@@ -845,7 +1123,7 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
             json,
         } => {
             let api_key = resolve_api_key()?;
-            let output = ling_plugin_app::list_projects(
+            let output = ling_plugin_app::list_product_projects(
                 &cli.api_base_url,
                 &api_key,
                 page,
@@ -859,10 +1137,37 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
                 println!("{}", ling_plugin_app::render_project_list(&output)?);
             }
         }
-        AppCommand::Create { .. } => {
-            return Err(platform_write_unavailable("创建平台应用"));
+        AppCommand::Create {
+            name,
+            description,
+            template_id,
+            mode,
+            json,
+        } => {
+            let api_key = resolve_api_key()?;
+            let output = management::create_project(
+                &cli.api_base_url,
+                &api_key,
+                &name,
+                description.as_deref(),
+                template_id,
+            )
+            .await?;
+            if json {
+                print_json(&output)?;
+            } else {
+                print_action_result(&output, "应用创建成功")?;
+                if mode == "custom" {
+                    eprintln!(
+                        "下一步：运行 `ling app init <name> --product-id <id>` 初始化并关联本地工程。"
+                    );
+                }
+            }
         }
-        AppCommand::Init(args) => return init_command(cli, args, product).await,
+        AppCommand::Init(args) => {
+            let product_id = explicit_product_id(cli, selector).await?;
+            return init_command(cli, args, product_id).await;
+        }
         AppCommand::Build(args) => {
             let ctx = agent_context(cli)?;
             return ling_plugin_app_project::build_command(&ctx, args).await;
@@ -872,7 +1177,7 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
             return ling_plugin_app_project::dev_command(&ctx).await;
         }
         AppCommand::Deploy(mut args) => {
-            args.product_id = product;
+            args.product_id = explicit_product_id(cli, selector).await?;
             let saved_api_key = if args.dry_run {
                 None
             } else {
@@ -888,86 +1193,49 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
             positional_product_id,
             json,
         } => {
-            let api_key = resolve_api_key()?;
-            let product_id = resolve_product_id(positional_product_id.or(product))?;
-            let output =
-                ling_plugin_app::inspect_product(&cli.api_base_url, &api_key, &product_id).await?;
+            let selector = selector.with_positional_product(positional_product_id)?;
+            let app = resolve_app(cli, selector).await?;
+            let output = get_app_detail(cli, &app).await?;
             if json {
                 print_json(&output)?;
             } else {
-                println!("{}", ling_plugin_app::render_project_inspect(&output)?);
+                let mcp_count = management::list_all_resource(
+                    &cli.api_base_url,
+                    &app.api_key,
+                    &app.project_id,
+                    &["mcp-servers"],
+                )
+                .await
+                .ok()
+                .map(|servers| servers.len());
+                println!(
+                    "{}",
+                    ling_plugin_app::render_project_inspect_with_mcp_count(&output, mcp_count)?
+                );
             }
         }
-        AppCommand::Request(args) => request_command(cli, args, product).await?,
+        AppCommand::Delete => {
+            let app = resolve_app(cli, selector).await?;
+            return Err(app_config_only_operation("删除应用", &app.project_id));
+        }
+        AppCommand::Request(args) => request_command(cli, args, selector).await?,
         AppCommand::Trace {
             sid,
             hours,
             full,
             json,
         } => trace_command(cli, &sid, hours, full, json).await?,
-        AppCommand::Device(args) => device_command(cli, args, product).await?,
-        AppCommand::Ota(args) => {
-            let feature = match args.command {
-                OtaCommand::Whitelist { .. } => "OTA 测试白名单管理",
-                _ => "OTA 固件管理",
-            };
-            return Err(platform_write_unavailable(feature));
+        AppCommand::Device(args) => device_command(cli, args, selector).await?,
+        AppCommand::Ota(args) => ota_command(cli, args, selector).await?,
+        AppCommand::Role(args) => role_command(cli, args, selector).await?,
+        AppCommand::InteractMode { mode, json } => {
+            interact_mode_command(cli, selector, mode, json).await?
         }
-        AppCommand::Role(args) => role_command(cli, args, product).await?,
-        AppCommand::InteractMode { mode, json } => match mode {
-            None => {
-                let detail = fetch_project_detail(cli, product).await?;
-                if json {
-                    print_json(&config_fragment(&detail, "/interaction_mode"))?;
-                } else {
-                    println!(
-                        "{}",
-                        ling_plugin_app::config_view::render_interact_mode(&detail)?
-                    );
-                }
-            }
-            Some(_) => return Err(platform_write_unavailable("设置交互模式")),
-        },
-        AppCommand::Kb(args) => match args.command {
-            AppKbCommand::List { json } => {
-                let detail = fetch_project_detail(cli, product).await?;
-                if json {
-                    print_json(&config_fragment(&detail, "/llm_feature/knowledge"))?;
-                } else {
-                    println!("{}", config_view::render_app_kb_list(&detail)?);
-                }
-            }
-            AppKbCommand::Link { .. } | AppKbCommand::Unlink { .. } => {
-                return Err(platform_write_unavailable("应用知识库关联"));
-            }
-        },
-        AppCommand::Lexicon(args) => match args.command {
-            LexiconCommand::List { json } => {
-                let detail = fetch_project_detail(cli, product).await?;
-                if json {
-                    print_json(&config_fragment(&detail, "/llm_feature/hotwords"))?;
-                } else {
-                    println!("{}", config_view::render_lexicon_list(&detail)?);
-                }
-            }
-            _ => return Err(platform_write_unavailable("专业词汇管理")),
-        },
-        AppCommand::Tone(args) => match args.command {
-            ToneCommand::Show { json } => {
-                let detail = fetch_project_detail(cli, product).await?;
-                if json {
-                    print_json(&config_fragment(&detail, "/prompt_tone_texts"))?;
-                } else {
-                    println!("{}", config_view::render_tone_show(&detail)?);
-                }
-            }
-            ToneCommand::Edit { .. } => {
-                return Err(platform_write_unavailable("提示语编辑"));
-            }
-        },
-        AppCommand::Mcp(_) => {
-            return Err(platform_write_unavailable("MCP 服务器配置"));
-        }
+        AppCommand::Kb(args) => app_kb_command(cli, args, selector).await?,
+        AppCommand::Lexicon(args) => lexicon_command(cli, args, selector).await?,
+        AppCommand::Tone(args) => tone_command(cli, args, selector).await?,
+        AppCommand::Mcp(args) => mcp_command(cli, args, selector).await?,
+        AppCommand::Config(args) => config_command(cli, args, selector).await?,
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -1010,7 +1278,8 @@ async fn select_product_interactively(cli: &Ctx) -> Result<Option<String>> {
         return Ok(None);
     };
 
-    let output = ling_plugin_app::list_projects(&cli.api_base_url, &api_key, 1, 50, None).await?;
+    let output =
+        ling_plugin_app::list_product_projects(&cli.api_base_url, &api_key, 1, 50, None).await?;
     let projects = output
         .get("data")
         .and_then(Value::as_array)
@@ -1051,11 +1320,22 @@ async fn select_product_interactively(cli: &Ctx) -> Result<Option<String>> {
         .map(str::to_owned))
 }
 
-async fn request_command(cli: &Ctx, args: RequestArgs, product: Option<String>) -> Result<()> {
-    let product_id = resolve_product_id(product)?;
-    let detail = fetch_project_detail_by_id(cli, &product_id).await?;
-    let secret = config_view::product_secret(&detail)
-        .context("无法从应用详情获取云云对接密钥（product secret）")?;
+async fn request_command(cli: &Ctx, args: RequestArgs, selector: AppSelector) -> Result<()> {
+    let verbose = args.verbose;
+    let output_tts = args.output_tts;
+    let output_tts_for_download = output_tts.clone();
+    let request_output = RequestTimelineOutput::new(io::stdout().is_terminal() && !verbose);
+    let app = resolve_app(cli, selector).await?;
+    let secret = match normalize_product_secret(args.product_secret)? {
+        Some(secret) => secret,
+        None => {
+            let detail = get_app_detail(cli, &app).await?;
+            config_view::product_secret(&detail).context(
+                "应用详情未返回产品密钥。请由用户本人前往平台网页的应用详情复制 Secret，\
+                 然后在自己的终端中传入 --product-secret <secret>；不要把 Secret 发到对话或日志中",
+            )?
+        }
+    };
 
     let input = if let Some(text) = args.text {
         RequestInput::Text(text)
@@ -1069,41 +1349,281 @@ async fn request_command(cli: &Ctx, args: RequestArgs, product: Option<String>) 
     };
 
     let mut sid: Option<String> = None;
-    ling_plugin_app::request::interaction_request(
+    let mut upstream_frames = 0_u64;
+    let mut downstream_frames = 0_u64;
+    let mut upstream_bytes = 0_u64;
+    let mut downstream_bytes = 0_u64;
+    let mut text_urls = Vec::<String>::new();
+    let mut tts_urls = Vec::<String>::new();
+    let mut seen_text_urls = HashSet::<String>::new();
+    let mut seen_tts_urls = HashSet::<String>::new();
+    let mut text_stream_tasks = Vec::new();
+    let mut tts_download_task = None;
+    let started_at = Instant::now();
+    let interaction_result = ling_plugin_app::request::interaction_request(
         &cli.api_base_url,
-        &product_id,
+        &app.product_id,
         &secret,
         &input,
         &opts,
-        |event| match event {
-            RequestEvent::Frame(frame) => {
-                if sid.is_none() {
-                    sid = serde_json::from_str::<Value>(&frame)
-                        .ok()
-                        .and_then(|value| {
+        |event| {
+            match &event {
+                RequestEvent::Frame {
+                    direction,
+                    body: frame,
+                } => {
+                    match direction {
+                        RequestDirection::Upstream => {
+                            upstream_frames += 1;
+                            upstream_bytes += frame.len() as u64;
+                        }
+                        RequestDirection::Downstream => {
+                            downstream_frames += 1;
+                            downstream_bytes += frame.len() as u64;
+                        }
+                    }
+                    if sid.is_none() {
+                        sid = serde_json::from_str::<Value>(frame).ok().and_then(|value| {
                             value
                                 .get("sid")
                                 .and_then(Value::as_str)
                                 .filter(|sid| !sid.is_empty())
                                 .map(str::to_owned)
                         });
+                    }
+                    if matches!(direction, &RequestDirection::Downstream) {
+                        if let Some(url) = ling_plugin_app::request::text_stream_url(frame) {
+                            if seen_text_urls.insert(url.clone()) {
+                                text_urls.push(url.clone());
+                                let reply_output = request_output.clone();
+                                let sse_output = request_output.clone();
+                                let verbose_sse = verbose;
+                                text_stream_tasks.push(tokio::spawn(async move {
+                                    ling_plugin_app::request::stream_reply_text(
+                                        &url,
+                                        |text| reply_output.update_reply(text),
+                                        |frame| {
+                                            if verbose_sse {
+                                                sse_output.print_line(
+                                                    &ling_plugin_app::request::render_verbose_sse_frame(frame),
+                                                );
+                                            }
+                                        },
+                                    )
+                                    .await
+                                }));
+                            }
+                        }
+                        if let Some(url) = ling_plugin_app::request::tts_url(frame) {
+                            if seen_tts_urls.insert(url.clone()) {
+                                tts_urls.push(url.clone());
+                                if tts_download_task.is_none() {
+                                    if let Some(path) = output_tts_for_download.clone() {
+                                        tts_download_task = Some(tokio::spawn(async move {
+                                            ling_plugin_app::request::download_tts(&url, &path)
+                                                .await
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                println!("{frame}");
+                RequestEvent::Binary {
+                    direction, bytes, ..
+                } => match direction {
+                    RequestDirection::Upstream => {
+                        upstream_frames += 1;
+                        upstream_bytes += *bytes as u64;
+                    }
+                    RequestDirection::Downstream => {
+                        downstream_frames += 1;
+                        downstream_bytes += *bytes as u64;
+                    }
+                },
             }
-            RequestEvent::Binary(bytes) => eprintln!("[binary] {bytes} bytes"),
+            if verbose {
+                request_output.print_line(&ling_plugin_app::request::render_verbose_event(&event));
+            } else {
+                request_output.print_line(&ling_plugin_app::request::render_event(&event));
+            }
         },
     )
-    .await?;
+    .await;
 
-    if let Some(sid) = sid {
-        eprintln!("sid: {sid}");
-        eprintln!("可用 `ling app trace {sid}` 查询该请求的记录。");
+    if let Err(error) = interaction_result {
+        for task in &text_stream_tasks {
+            task.abort();
+        }
+        request_output.finish_reply(None);
+        return Err(error);
     }
+
+    for task in text_stream_tasks {
+        match task.await {
+            Ok(Ok(text)) => request_output.finish_reply(Some(&text)),
+            Ok(Err(error)) => {
+                request_output.finish_reply(None);
+                request_output.print_line(&ling_plugin_app::request::render_reply_stream_error(
+                    &error.to_string(),
+                ));
+            }
+            Err(error) => {
+                request_output.finish_reply(None);
+                request_output.print_line(&ling_plugin_app::request::render_reply_stream_error(
+                    &error.to_string(),
+                ));
+            }
+        }
+    }
+
+    let saved_tts = match (output_tts, tts_download_task) {
+        (Some(path), Some(task)) => {
+            let bytes = task.await.context("TTS 下载任务异常结束")??;
+            Some((path, bytes))
+        }
+        (Some(_), None) => {
+            anyhow::bail!("未收到 TTS URL，无法使用 --output-tts 保存音频")
+        }
+        (None, _) => None,
+    };
+
+    let elapsed = started_at.elapsed();
+    println!();
+    if let Some(sid) = &sid {
+        println!("- SID: {sid}");
+    }
+    for url in &tts_urls {
+        println!("- TTS URL: {url}");
+    }
+    for url in &text_urls {
+        println!("- 文本 URL: {url}");
+    }
+    if let Some((path, bytes)) = saved_tts {
+        println!("- TTS 文件: {}（{bytes} bytes）", path.display());
+    }
+    println!("- 耗时: {:.2}s", elapsed.as_secs_f64());
+    println!("- 上行: {upstream_frames} 帧，{upstream_bytes} bytes");
+    println!("- 下行: {downstream_frames} 帧，{downstream_bytes} bytes");
     Ok(())
+}
+
+#[derive(Clone)]
+struct RequestTimelineOutput {
+    state: Arc<Mutex<RequestTimelineOutputState>>,
+}
+
+struct RequestTimelineOutputState {
+    live_updates: bool,
+    terminal_width: usize,
+    live_reply: Option<String>,
+}
+
+impl RequestTimelineOutput {
+    fn new(live_updates: bool) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(RequestTimelineOutputState {
+                live_updates,
+                terminal_width: terminal::width().unwrap_or(80),
+                live_reply: None,
+            })),
+        }
+    }
+
+    fn print_line(&self, line: &str) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.refresh_terminal_width();
+        Self::write_output(Some(state.print_line_output(line)));
+    }
+
+    fn update_reply(&self, text: &str) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.refresh_terminal_width();
+        Self::write_output(state.update_reply_output(text));
+    }
+
+    fn finish_reply(&self, final_text: Option<&str>) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        Self::write_output(state.finish_reply_output(final_text));
+    }
+
+    fn write_output(output: Option<String>) {
+        let Some(output) = output else {
+            return;
+        };
+        let mut stdout = io::stdout().lock();
+        let _ = write!(stdout, "{output}");
+        let _ = stdout.flush();
+    }
+}
+
+impl RequestTimelineOutputState {
+    fn refresh_terminal_width(&mut self) {
+        if self.live_updates {
+            if let Some(width) = terminal::width() {
+                self.terminal_width = width;
+            }
+        }
+    }
+
+    fn reply_preview(&self, text: &str) -> String {
+        // Keep the last terminal column empty: writing into it can trigger an automatic wrap.
+        ling_plugin_app::request::render_reply_preview(text, self.terminal_width.saturating_sub(1))
+    }
+
+    fn print_line_output(&self, line: &str) -> String {
+        if self.live_updates {
+            if let Some(reply) = &self.live_reply {
+                let reply_line = self.reply_preview(reply);
+                return format!("\r\x1b[2K{line}\n{reply_line}");
+            }
+        }
+        format!("{line}\n")
+    }
+
+    fn update_reply_output(&mut self, text: &str) -> Option<String> {
+        let line = self.reply_preview(text);
+        self.live_reply = Some(text.to_owned());
+        self.live_updates.then(|| format!("\r\x1b[2K{line}"))
+    }
+
+    fn finish_reply_output(&mut self, final_text: Option<&str>) -> Option<String> {
+        let line = match final_text.filter(|text| !text.is_empty()) {
+            Some(text) => ling_plugin_app::request::render_reply_text(text),
+            None => match &self.live_reply {
+                Some(live_text) => ling_plugin_app::request::render_reply_text(live_text),
+                None => return None,
+            },
+        };
+        self.live_reply = None;
+        Some(if self.live_updates {
+            format!("\r\x1b[2K{line}\n")
+        } else {
+            format!("{line}\n")
+        })
+    }
 }
 
 async fn trace_command(cli: &Ctx, sid: &str, hours: u32, full: bool, json: bool) -> Result<()> {
     let api_key = resolve_api_key()?;
+    if let Some(output) =
+        ling_plugin_app::records::query_agent_logs(&cli.api_base_url, &api_key, sid).await?
+    {
+        let has_logs = output
+            .get("data")
+            .and_then(Value::as_array)
+            .is_some_and(|logs| !logs.is_empty());
+        if !has_logs {
+            anyhow::bail!("未找到 SID 为 {sid} 的 Agent 执行日志。");
+        }
+        if json {
+            return print_json(&output);
+        }
+        println!("{}", ling_plugin_app::records::render_agent_logs(&output)?);
+        return Ok(());
+    }
+
+    eprintln!("目标 API 不支持按 SID 直查，正在兼容扫描最近 {hours} 小时的请求记录…");
     let outcome =
         ling_plugin_app::records::find_by_sid(&cli.api_base_url, &api_key, sid, hours).await?;
     // SID 是请求唯一标识：要么恰好一条，要么未命中（报错退出，便于脚本判断）
@@ -1122,91 +1642,960 @@ async fn trace_command(cli: &Ctx, sid: &str, hours: u32, full: bool, json: bool)
     }
 }
 
-async fn device_command(cli: &Ctx, args: DeviceArgs, product: Option<String>) -> Result<()> {
+async fn device_command(cli: &Ctx, args: DeviceArgs, selector: AppSelector) -> Result<()> {
+    let app = resolve_app(cli, selector).await?;
     match args.command {
         DeviceCommand::Quota { json } => {
-            let detail = fetch_project_detail(cli, product).await?;
+            let detail = get_app_detail(cli, &app).await?;
             if json {
                 let product = config_view::project_data(&detail)
                     .get("product")
                     .cloned()
                     .unwrap_or(Value::Null);
                 print_json(&serde_json::json!({
-                    "assignedDeviceQuota": product.get("assignedDeviceQuota"),
-                    "consumedDeviceQuota": product.get("consumedDeviceQuota"),
-                    "deviceAuthCheck": product.get("deviceAuthCheck"),
+                    "assignedDeviceQuota": product.get("assignedDeviceQuota").or_else(|| product.get("assigned_device_quota")),
+                    "consumedDeviceQuota": product.get("consumedDeviceQuota").or_else(|| product.get("consumed_device_quota")),
+                    "deviceAuthCheck": product.get("deviceAuthCheck").or_else(|| product.get("device_auth_check")),
                 }))?;
             } else {
                 println!("{}", config_view::render_device_quota(&detail)?);
             }
         }
         DeviceCommand::Query { device_id, json } => {
-            let api_key = resolve_api_key()?;
-            let product_id = resolve_product_id(product)?;
-            let output =
-                ling_plugin_app::device_query(&cli.api_base_url, &api_key, &product_id, &device_id)
-                    .await?;
-            if json {
-                print_json(&output)?;
-                return Ok(());
-            }
+            let output = ling_plugin_app::device_query(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.product_id,
+                &device_id,
+            )
+            .await?;
             let valid = output
                 .get("is_valid")
+                .or_else(|| output.pointer("/data/is_valid"))
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            if json {
+                print_json(&output)?;
+            }
             if valid {
-                println!("设备 {device_id} 已授权（is_valid=true）。");
+                if !json {
+                    println!("设备 {device_id} 已授权（is_valid=true）。");
+                }
             } else {
-                println!("设备 {device_id} 未授权（is_valid=false）。");
+                anyhow::bail!(
+                    "设备 {device_id} 未授权（is_valid=false）；请先导入设备或检查 Product ID"
+                )
             }
         }
         DeviceCommand::Enforce { state, json } => match state {
             None => {
-                let detail = fetch_project_detail(cli, product).await?;
+                let output = management::get_resource(
+                    &cli.api_base_url,
+                    &app.api_key,
+                    &app.project_id,
+                    &["device-whitelist"],
+                )
+                .await?;
                 if json {
-                    let product = config_view::project_data(&detail)
-                        .get("product")
-                        .cloned()
-                        .unwrap_or(Value::Null);
-                    print_json(&serde_json::json!({
-                        "deviceAuthCheck": product.get("deviceAuthCheck"),
-                    }))?;
+                    print_json(&output)?;
                 } else {
-                    match config_view::device_auth_check(&detail) {
-                        Some(true) => println!("强制白名单模式：开启"),
-                        Some(false) => println!("强制白名单模式：关闭"),
-                        None => println!("强制白名单模式：未知"),
-                    }
+                    let enabled = output
+                        .pointer("/data/enabled")
+                        .and_then(Value::as_bool)
+                        .context("设备白名单响应缺少 data.enabled")?;
+                    println!("{}", if enabled { "on" } else { "off" });
                 }
             }
-            Some(_) => return Err(platform_write_unavailable("切换强制白名单模式")),
+            Some(state) => {
+                return Err(app_config_only_operation(
+                    &format!(
+                        "{}设备强制白名单",
+                        if state == "on" { "开启" } else { "关闭" }
+                    ),
+                    &app.project_id,
+                ));
+            }
         },
         DeviceCommand::List => {
-            return Err(platform_write_unavailable("设备列表查询"));
+            return Err(app_config_only_operation("查看设备列表", &app.project_id));
         }
-        DeviceCommand::Add { .. } => {
-            return Err(platform_write_unavailable("导入设备"));
+        DeviceCommand::Add {
+            device_ids,
+            file,
+            json,
+        } => {
+            let output = if let Some(file) = file {
+                management::upload_device_file(
+                    &cli.api_base_url,
+                    &app.api_key,
+                    &app.project_id,
+                    &file,
+                )
+                .await?
+            } else {
+                management::create_resource(
+                    &cli.api_base_url,
+                    &app.api_key,
+                    &app.project_id,
+                    &["devices", "import-by-ids"],
+                    serde_json::json!({"device_ids": device_ids}),
+                )
+                .await?
+            };
+            print_management_result(&output, json)?;
         }
     }
     Ok(())
 }
 
-async fn role_command(cli: &Ctx, args: RoleArgs, product: Option<String>) -> Result<()> {
+async fn role_command(cli: &Ctx, args: RoleArgs, selector: AppSelector) -> Result<()> {
+    let app = resolve_app(cli, selector).await?;
     match args.command {
-        RoleCommand::List { json } => {
-            let detail = fetch_project_detail(cli, product).await?;
-            if json {
-                print_json(&config_fragment(&detail, "/llm_roles"))?;
-            } else {
-                println!("{}", config_view::render_role_list(&detail)?);
-            }
-            Ok(())
+        RoleCommand::List {
+            page,
+            page_size,
+            json,
+        } => {
+            let output = management::list_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["roles"],
+                page,
+                page_size,
+            )
+            .await?;
+            print_management_result(&output, json)
         }
-        RoleCommand::Add { .. }
-        | RoleCommand::Edit { .. }
-        | RoleCommand::Delete { .. }
-        | RoleCommand::SetDefault { .. } => Err(platform_write_unavailable("角色编辑")),
+        RoleCommand::Add { name, input, json } => {
+            let mut body = json_body_from_input(input, role_edit_key)?;
+            body.as_object_mut()
+                .context("角色请求必须是 JSON 对象")?
+                .insert("name".to_owned(), Value::String(name));
+            let output = management::create_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["roles"],
+                body,
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+        RoleCommand::Edit {
+            role_id,
+            input,
+            json,
+        } => {
+            let body = json_body_from_input(input, role_edit_key)?;
+            ensure_non_empty_object(&body, "role edit")?;
+            let output = management::update_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["roles", &role_id],
+                body,
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+        RoleCommand::Delete { role_id } => Err(app_config_only_operation(
+            &format!("删除角色 {role_id}"),
+            &app.project_id,
+        )),
+        RoleCommand::SetDefault { role_id, json } => {
+            let output = management::update_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["default-role"],
+                serde_json::json!({"role_id": role_id}),
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
     }
+}
+
+async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<()> {
+    let app = resolve_app(cli, selector).await?;
+    match args.command {
+        OtaCommand::List {
+            page,
+            page_size,
+            json,
+        } => {
+            let output = management::list_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["ota", "packages"],
+                page,
+                page_size,
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+        OtaCommand::Get { package_id, json } => {
+            let items = management::list_all_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["ota", "packages"],
+            )
+            .await?;
+            let item = items
+                .into_iter()
+                .find(|item| {
+                    ["id", "package_id"].iter().any(|key| {
+                        item.get(key).and_then(Value::as_str) == Some(package_id.as_str())
+                    })
+                })
+                .with_context(|| format!("未找到 OTA 包：{package_id}"))?;
+            if json {
+                print_json(&item)
+            } else {
+                println!("{}", render_ota_package(&item));
+                Ok(())
+            }
+        }
+        OtaCommand::Upload {
+            file,
+            version,
+            version_number,
+            ota_mode,
+            description,
+            minimum_version,
+            json,
+        } => {
+            let output = management::upload_ota(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                None,
+                management::OtaForm {
+                    file: Some(&file),
+                    version: Some(&version),
+                    version_number: Some(version_number),
+                    ota_mode: Some(&ota_mode),
+                    description: description.as_deref(),
+                    minimum_version: minimum_version.as_deref(),
+                },
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+        OtaCommand::Edit {
+            package_id,
+            file,
+            version,
+            version_number,
+            ota_mode,
+            description,
+            minimum_version,
+            json,
+        } => {
+            if file.is_none()
+                && version.is_none()
+                && version_number.is_none()
+                && ota_mode.is_none()
+                && description.is_none()
+                && minimum_version.is_none()
+            {
+                anyhow::bail!("ota edit 至少需要一个修改参数");
+            }
+            let output = management::upload_ota(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                Some(&package_id),
+                management::OtaForm {
+                    file: file.as_deref(),
+                    version: version.as_deref(),
+                    version_number,
+                    ota_mode: ota_mode.as_deref(),
+                    description: description.as_deref(),
+                    minimum_version: minimum_version.as_deref(),
+                },
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+        OtaCommand::Publish { package_id } => Err(app_config_only_operation(
+            &format!("正式发布 OTA 包 {package_id}"),
+            &app.project_id,
+        )),
+        OtaCommand::Revoke { package_id } => Err(app_config_only_operation(
+            &format!("撤销 OTA 包 {package_id}"),
+            &app.project_id,
+        )),
+        OtaCommand::Delete {
+            package_id,
+            yes,
+            json,
+        } => {
+            if !yes
+                && !confirm(&format!(
+                    "仅未正式发布的 OTA 包可删除。确认删除 OTA 包 {package_id}？"
+                ))?
+            {
+                eprintln!("已取消。");
+                return Ok(());
+            }
+            let output = management::delete_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["ota", "packages", &package_id],
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+        OtaCommand::Whitelist { command } => match command {
+            OtaWhitelistCommand::List {
+                page,
+                page_size,
+                json,
+            } => {
+                let output = management::list_resource(
+                    &cli.api_base_url,
+                    &app.api_key,
+                    &app.project_id,
+                    &["ota", "whitelist"],
+                    page,
+                    page_size,
+                )
+                .await?;
+                print_management_result(&output, json)
+            }
+            OtaWhitelistCommand::Add { device_id, json } => {
+                let output = management::action_resource(
+                    &cli.api_base_url,
+                    &app.api_key,
+                    &app.project_id,
+                    &["ota", "whitelist", &device_id],
+                    None,
+                )
+                .await?;
+                print_management_result(&output, json)
+            }
+            OtaWhitelistCommand::Delete { device_id, json } => {
+                let output = management::delete_resource(
+                    &cli.api_base_url,
+                    &app.api_key,
+                    &app.project_id,
+                    &["ota", "whitelist", &device_id],
+                )
+                .await?;
+                print_management_result(&output, json)
+            }
+        },
+    }
+}
+
+async fn interact_mode_command(
+    cli: &Ctx,
+    selector: AppSelector,
+    mode: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let app = resolve_app(cli, selector).await?;
+    let output = match mode {
+        None => {
+            management::get_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["interaction-mode"],
+            )
+            .await?
+        }
+        Some(mode) => {
+            let value = match mode.as_str() {
+                "oneshot" => 0,
+                "full-duplex" => 1,
+                "half-duplex" => 2,
+                _ => unreachable!("clap validates interaction mode"),
+            };
+            management::update_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["interaction-mode"],
+                serde_json::json!({"interaction_mode": value}),
+            )
+            .await?
+        }
+    };
+    if json {
+        print_json(&output)
+    } else {
+        let value = output
+            .pointer("/data/interaction_mode")
+            .and_then(Value::as_i64)
+            .context("交互模式响应缺少 data.interaction_mode")?;
+        println!("{}", config_view::interact_mode_label(value));
+        Ok(())
+    }
+}
+
+async fn app_kb_command(cli: &Ctx, args: AppKbArgs, selector: AppSelector) -> Result<()> {
+    let ResolvedApp {
+        api_key,
+        project_id,
+        ..
+    } = resolve_app(cli, selector).await?;
+    match args.command {
+        AppKbCommand::List {
+            page,
+            page_size,
+            json,
+        } => {
+            let output = management::list_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["knowledge-bases"],
+                page,
+                page_size,
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+        AppKbCommand::Link { index_id, json } => {
+            replace_project_kb(cli, &api_key, &project_id, &index_id, true, json).await
+        }
+        AppKbCommand::Unlink { index_id, json } => {
+            replace_project_kb(cli, &api_key, &project_id, &index_id, false, json).await
+        }
+    }
+}
+
+async fn replace_project_kb(
+    cli: &Ctx,
+    api_key: &str,
+    project_id: &str,
+    index_id: &str,
+    link: bool,
+    json: bool,
+) -> Result<()> {
+    let current =
+        management::list_all_resource(&cli.api_base_url, api_key, project_id, &["knowledge-bases"])
+            .await?;
+    let mut ids = current
+        .iter()
+        .filter_map(|item| {
+            item.get("index_id")
+                .or_else(|| item.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    if link {
+        if !ids.iter().any(|id| id == index_id) {
+            ids.push(index_id.to_owned());
+        }
+    } else {
+        ids.retain(|id| id != index_id);
+    }
+    let output = management::update_resource(
+        &cli.api_base_url,
+        api_key,
+        project_id,
+        &["knowledge-bases"],
+        serde_json::json!({"knowledge_base_ids": ids}),
+    )
+    .await?;
+    print_management_result(&output, json)
+}
+
+async fn lexicon_command(cli: &Ctx, args: LexiconArgs, selector: AppSelector) -> Result<()> {
+    let ResolvedApp {
+        api_key,
+        project_id,
+        ..
+    } = resolve_app(cli, selector).await?;
+    match args.command {
+        LexiconCommand::List {
+            page,
+            page_size,
+            json,
+        } => {
+            let output = management::list_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["hotwords"],
+                page,
+                page_size,
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+        LexiconCommand::Add { word, json } => {
+            let output = management::create_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["hotwords"],
+                serde_json::json!({"word": word}),
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+        LexiconCommand::Edit { word } => Err(app_config_only_operation(
+            &format!("修改专业词汇 {word}"),
+            &project_id,
+        )),
+        LexiconCommand::Delete { hotword_id } => Err(app_config_only_operation(
+            &format!("删除专业词汇 {hotword_id}"),
+            &project_id,
+        )),
+    }
+}
+
+async fn tone_command(cli: &Ctx, args: ToneArgs, selector: AppSelector) -> Result<()> {
+    let ResolvedApp {
+        api_key,
+        project_id,
+        ..
+    } = resolve_app(cli, selector).await?;
+    match args.command {
+        ToneCommand::Show {
+            page,
+            page_size,
+            json,
+        } => {
+            let output = management::list_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["prompt-tone-texts"],
+                page,
+                page_size,
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+        ToneCommand::Edit {
+            set,
+            reset,
+            reset_all,
+            file,
+            json,
+        } => {
+            if reset_all {
+                let output = management::action_resource(
+                    &cli.api_base_url,
+                    &api_key,
+                    &project_id,
+                    &["prompt-tone-texts", "restore-default"],
+                    None,
+                )
+                .await?;
+                return print_management_result(&output, json);
+            }
+            if !reset.is_empty() {
+                if reset.len() > 1 || !set.is_empty() {
+                    anyhow::bail!(
+                        "服务端恢复默认接口一次只接受一个 key，不能与 --set 原子合并；请使用单个 --reset 或 --reset-all"
+                    );
+                }
+                let output = management::action_resource(
+                    &cli.api_base_url,
+                    &api_key,
+                    &project_id,
+                    &["prompt-tone-texts", "restore-default"],
+                    Some(serde_json::json!({"key": reset[0]})),
+                )
+                .await?;
+                return print_management_result(&output, json);
+            }
+
+            let texts = if let Some(file) = file {
+                let value = read_json_file(&file)?;
+                value.get("texts").cloned().unwrap_or(value)
+            } else {
+                if set.is_empty() {
+                    anyhow::bail!("tone edit 需要 --set、--reset、--reset-all 或 --file");
+                }
+                let current = management::list_resource(
+                    &cli.api_base_url,
+                    &api_key,
+                    &project_id,
+                    &["prompt-tone-texts"],
+                    1,
+                    100,
+                )
+                .await?;
+                let mut texts = current
+                    .get("data")
+                    .and_then(Value::as_array)
+                    .context("提示语列表响应缺少 data 数组")?
+                    .iter()
+                    .map(|item| {
+                        let key = item
+                            .get("key")
+                            .and_then(Value::as_str)
+                            .context("提示语列表项缺少 key")?;
+                        let text = item
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .context("提示语列表项缺少 text")?;
+                        Ok(serde_json::json!({"key": key, "text": text}))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                for assignment in set {
+                    let (key, text) = split_assignment(&assignment)?;
+                    let item = texts
+                        .iter_mut()
+                        .find(|item| item.get("key").and_then(Value::as_str) == Some(key.as_str()))
+                        .with_context(|| format!("当前提示语配置中不存在 key：{key}"))?;
+                    item.as_object_mut()
+                        .context("提示语列表项不是 JSON 对象")?
+                        .insert("text".to_owned(), parse_json_literal(&text));
+                }
+                Value::Array(texts)
+            };
+            if !texts.is_array() {
+                anyhow::bail!("tone --file 必须包含 JSON 数组或 {{\"texts\": [...]}}");
+            }
+            let output = management::update_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["prompt-tone-texts"],
+                serde_json::json!({"texts": texts}),
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+    }
+}
+
+async fn mcp_command(cli: &Ctx, args: McpArgs, selector: AppSelector) -> Result<()> {
+    let ResolvedApp {
+        api_key,
+        project_id,
+        ..
+    } = resolve_app(cli, selector).await?;
+    match args.command {
+        McpCommand::List {
+            page,
+            page_size,
+            json,
+        } => {
+            let output = management::list_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["mcp-servers"],
+                page,
+                page_size,
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+        McpCommand::Add {
+            name,
+            server_id,
+            transport_type,
+            url,
+            description,
+            authorization,
+            enabled,
+            json,
+        } => {
+            let mut body = serde_json::json!({
+                "name": name,
+                "server_id": server_id,
+                "transport_type": transport_type,
+                "url": url,
+                "enabled": enabled,
+            });
+            if let Some(description) = description {
+                body["description"] = Value::String(description);
+            }
+            if let Some(authorization) = authorization {
+                body["authorization"] = Value::String(authorization);
+            }
+            let output = management::create_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["mcp-servers"],
+                body,
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+        McpCommand::Edit {
+            server_id,
+            input,
+            json,
+        } => {
+            let body = json_body_from_input(input, |key| key.to_owned())?;
+            ensure_non_empty_object(&body, "mcp edit")?;
+            let output = management::update_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["mcp-servers", &server_id],
+                body,
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+        McpCommand::Enable { server_id, json } => {
+            let output = management::update_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["mcp-servers", &server_id],
+                serde_json::json!({"enabled": true}),
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+        McpCommand::Disable { server_id, json } => {
+            let output = management::update_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["mcp-servers", &server_id],
+                serde_json::json!({"enabled": false}),
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+        McpCommand::Delete { server_id } => Err(app_config_only_operation(
+            &format!("删除 MCP 服务器 {server_id}"),
+            &project_id,
+        )),
+    }
+}
+
+async fn config_command(cli: &Ctx, args: ConfigArgs, selector: AppSelector) -> Result<()> {
+    let ResolvedApp {
+        api_key,
+        project_id,
+        ..
+    } = resolve_app(cli, selector).await?;
+    match args.command {
+        ConfigCommand::Show { json } => {
+            let (interaction, prompt, model) = tokio::try_join!(
+                management::get_resource(
+                    &cli.api_base_url,
+                    &api_key,
+                    &project_id,
+                    &["interaction-mode"],
+                ),
+                management::get_resource(
+                    &cli.api_base_url,
+                    &api_key,
+                    &project_id,
+                    &["agent", "prompt"],
+                ),
+                management::get_resource(
+                    &cli.api_base_url,
+                    &api_key,
+                    &project_id,
+                    &["agent", "model"],
+                ),
+            )?;
+            let output = serde_json::json!({
+                "interaction": interaction.get("data").cloned().unwrap_or(Value::Null),
+                "prompt": prompt.get("data").cloned().unwrap_or(Value::Null),
+                "model": model.get("data").cloned().unwrap_or(Value::Null),
+            });
+            if json {
+                print_json(&output)
+            } else {
+                println!("{}", render_config_summary(&output));
+                Ok(())
+            }
+        }
+        ConfigCommand::Edit { input, json } => {
+            let body = json_body_from_input(input, |key| key.replace('-', "_"))?;
+            ensure_non_empty_object(&body, "config edit")?;
+            let mut fields = body
+                .as_object()
+                .cloned()
+                .context("config edit 请求必须是 JSON 对象")?;
+            let unsupported = fields
+                .keys()
+                .filter(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "interaction_mode"
+                            | "system_prompt"
+                            | "protocol"
+                            | "endpoint"
+                            | "authorization"
+                            | "model"
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if !unsupported.is_empty() {
+                anyhow::bail!(
+                    "服务端当前不支持这些 app config 字段：{}。可用字段：interaction_mode、system_prompt、protocol、endpoint、authorization、model",
+                    unsupported.join(", ")
+                );
+            }
+            let mut results = serde_json::Map::new();
+
+            if let Some(value) = fields.remove("interaction_mode") {
+                let mode = interaction_mode_value(&value)?;
+                let output = management::update_resource(
+                    &cli.api_base_url,
+                    &api_key,
+                    &project_id,
+                    &["interaction-mode"],
+                    serde_json::json!({"interaction_mode": mode}),
+                )
+                .await?;
+                results.insert("interaction".to_owned(), output);
+            }
+
+            if let Some(system_prompt) = fields.remove("system_prompt") {
+                if !system_prompt.is_string() {
+                    anyhow::bail!("system_prompt 必须是字符串");
+                }
+                let output = management::update_resource(
+                    &cli.api_base_url,
+                    &api_key,
+                    &project_id,
+                    &["agent", "prompt"],
+                    serde_json::json!({"system_prompt": system_prompt}),
+                )
+                .await?;
+                results.insert("prompt".to_owned(), output);
+            }
+
+            let mut model = serde_json::Map::new();
+            for key in ["protocol", "endpoint", "authorization", "model"] {
+                if let Some(value) = fields.remove(key) {
+                    model.insert(key.to_owned(), value);
+                }
+            }
+            if !model.is_empty() {
+                let output = management::update_resource(
+                    &cli.api_base_url,
+                    &api_key,
+                    &project_id,
+                    &["agent", "model"],
+                    Value::Object(model),
+                )
+                .await?;
+                results.insert("model".to_owned(), output);
+            }
+
+            debug_assert!(fields.is_empty());
+            let output = Value::Object(results);
+            if json {
+                print_json(&output)
+            } else {
+                eprintln!(
+                    "配置已更新：{}",
+                    output
+                        .as_object()
+                        .into_iter()
+                        .flat_map(|object| object.keys())
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                Ok(())
+            }
+        }
+        ConfigCommand::ResetModel { json } => {
+            let output = management::action_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["agent", "model", "restore-default"],
+                None,
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+        ConfigCommand::TestModel {
+            endpoint,
+            model,
+            authorization,
+            json,
+        } => {
+            let mut body = serde_json::json!({"endpoint": endpoint, "model": model});
+            if let Some(authorization) = authorization {
+                body["authorization"] = Value::String(authorization);
+            }
+            let output = management::action_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["agent", "model", "test"],
+                Some(body),
+            )
+            .await?;
+            print_management_result(&output, json)
+        }
+    }
+}
+
+fn interaction_mode_value(value: &Value) -> Result<i64> {
+    match value {
+        Value::Number(number) => number
+            .as_i64()
+            .filter(|value| matches!(value, 0..=2))
+            .context("interaction_mode 只允许 0、1、2"),
+        Value::String(mode) => match mode.as_str() {
+            "oneshot" => Ok(0),
+            "full-duplex" | "full_duplex" => Ok(1),
+            "half-duplex" | "half_duplex" => Ok(2),
+            _ => anyhow::bail!(
+                "interaction_mode 只允许 oneshot、full-duplex、half-duplex 或 0、1、2"
+            ),
+        },
+        _ => anyhow::bail!("interaction_mode 只允许 oneshot、full-duplex、half-duplex 或 0、1、2"),
+    }
+}
+
+fn render_config_summary(value: &Value) -> String {
+    let mode = value
+        .pointer("/interaction/interaction_mode")
+        .and_then(Value::as_i64)
+        .map(config_view::interact_mode_label)
+        .unwrap_or("unknown");
+    let prompt = value
+        .pointer("/prompt/system_prompt")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let protocol = value
+        .pointer("/model/protocol")
+        .and_then(Value::as_str)
+        .unwrap_or("-");
+    let endpoint = value
+        .pointer("/model/endpoint")
+        .and_then(Value::as_str)
+        .unwrap_or("-");
+    let model = value
+        .pointer("/model/model")
+        .and_then(Value::as_str)
+        .unwrap_or("-");
+    let authorization = if value
+        .pointer("/model/authorization_configured")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        "已配置"
+    } else {
+        "未配置"
+    };
+    format!(
+        "交互模式: {mode}\n系统提示词: {}\n模型协议: {protocol}\n模型端点: {endpoint}\n模型: {model}\n模型凭据: {authorization}",
+        if prompt.is_empty() { "(默认)" } else { prompt }
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1238,16 +2627,10 @@ async fn kb_command(api_base_url: &str, args: KbArgs) -> Result<()> {
                 Ok(())
             }
         }
-        KbCommand::Delete { index_id, yes } => {
-            if !yes && !confirm(&format!("确定删除知识库 {index_id} 吗？此操作不可恢复"))?
-            {
-                eprintln!("已取消。");
-                return Ok(());
-            }
-            ling_plugin_kb::delete(api_base_url, &api_key, &index_id).await?;
-            eprintln!("已删除知识库 {index_id}。");
-            Ok(())
-        }
+        KbCommand::Delete { index_id, .. } => Err(web_only_operation(
+            &format!("删除知识库 {index_id}"),
+            PLATFORM_KB_URL,
+        )),
         KbCommand::Doc { index_id, command } => match command {
             KbDocCommand::List { page, size, json } => {
                 let output =
@@ -1266,12 +2649,10 @@ async fn kb_command(api_base_url: &str, args: KbArgs) -> Result<()> {
                         .await?;
                 print_json(&output)
             }
-            KbDocCommand::Delete { doc_ids } => {
-                ling_plugin_kb::delete_documents(api_base_url, &api_key, &index_id, &doc_ids)
-                    .await?;
-                eprintln!("已删除 {} 个文档。", doc_ids.len());
-                Ok(())
-            }
+            KbDocCommand::Delete { doc_ids } => Err(web_only_operation(
+                &format!("删除知识库 {index_id} 中的 {} 个文档", doc_ids.len()),
+                &kb_detail_url(&index_id),
+            )),
         },
         KbCommand::Query {
             index_id,
@@ -1290,12 +2671,22 @@ async fn kb_command(api_base_url: &str, args: KbArgs) -> Result<()> {
                 threshold,
             )
             .await?;
+            let matched = output
+                .get("data")
+                .and_then(Value::as_array)
+                .is_some_and(|items| !items.is_empty());
+            if !matched {
+                if json {
+                    print_json(&output)?;
+                }
+                anyhow::bail!("未检索到相关知识点；请调整查询文本、--limit 或 --threshold")
+            }
             if json {
-                print_json(&output)
+                print_json(&output)?;
             } else {
                 println!("{}", ling_plugin_kb::render_query(&output)?);
-                Ok(())
             }
+            Ok(())
         }
     }
 }
@@ -1333,45 +2724,357 @@ fn agent_context(cli: &Ctx) -> Result<ling_plugin_app_project::AgentContext> {
     })
 }
 
-async fn fetch_project_detail(cli: &Ctx, product_id: Option<String>) -> Result<Value> {
-    let product_id = resolve_product_id(product_id)?;
-    fetch_project_detail_by_id(cli, &product_id).await
-}
-
-async fn fetch_project_detail_by_id(cli: &Ctx, product_id: &str) -> Result<Value> {
-    let api_key = resolve_api_key()?;
-    ling_plugin_app::inspect_product(&cli.api_base_url, &api_key, product_id).await
-}
-
-/// 提取应用配置片段（相对 apps[0].config 的 JSON Pointer）。
-fn config_fragment(detail: &Value, pointer: &str) -> Value {
-    config_view::project_data(detail)
-        .pointer(&format!("/apps/0/config{pointer}"))
-        .cloned()
-        .unwrap_or(Value::Null)
-}
-
-fn resolve_product_id(flag: Option<String>) -> Result<String> {
-    let flag = flag
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty());
-    if let Some(product_id) = flag {
-        return Ok(product_id);
+impl AppSelector {
+    fn with_positional_product(mut self, positional: Option<String>) -> Result<Self> {
+        let Some(positional) = clean_identifier(positional) else {
+            return Ok(self);
+        };
+        if self.product_id.is_some() || self.project_id.is_some() || self.app_id.is_some() {
+            anyhow::bail!(
+                "inspect 的位置参数不能与 --product-id、--project-id 或 --app-id 同时使用"
+            );
+        }
+        self.product_id = Some(positional);
+        Ok(self)
     }
-    std::env::current_dir()
-        .ok()
-        .and_then(|cwd| ling_plugin_app_project::project::read_product_id(&cwd))
-        .ok_or_else(|| {
-            anyhow!(
-                "未指定应用：请传 --product-id，或在含 product_id 的 listenai.toml 项目目录内执行"
-            )
-        })
+
+    fn is_empty(&self) -> bool {
+        self.product_id.is_none() && self.project_id.is_none() && self.app_id.is_none()
+    }
+}
+
+async fn explicit_product_id(cli: &Ctx, selector: AppSelector) -> Result<Option<String>> {
+    if let Some(product_id) = clean_identifier(selector.product_id.clone()) {
+        return Ok(Some(product_id));
+    }
+    if selector.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(resolve_app(cli, selector).await?.product_id))
+}
+
+async fn resolve_app(cli: &Ctx, mut selector: AppSelector) -> Result<ResolvedApp> {
+    selector.product_id = clean_identifier(selector.product_id);
+    selector.project_id = clean_identifier(selector.project_id);
+    selector.app_id = clean_identifier(selector.app_id);
+    if selector.is_empty() {
+        selector.product_id = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| ling_plugin_app_project::project::read_product_id(&cwd));
+    }
+
+    let api_key = resolve_api_key()?;
+    if let Some(project_id) = selector.project_id {
+        match management::get_project(&cli.api_base_url, &api_key, &project_id).await {
+            Ok(detail) => {
+                return resolved_from_project(
+                    &api_key,
+                    &project_id,
+                    config_view::project_data(&detail),
+                );
+            }
+            Err(detail_error) => {
+                let projects =
+                    ling_plugin_app::list_all_projects(&cli.api_base_url, &api_key, None).await?;
+                let project = projects
+                    .iter()
+                    .find(|project| {
+                        ling_plugin_app::project_id(project).as_deref()
+                            == Some(project_id.as_str())
+                    })
+                    .with_context(|| {
+                        format!(
+                            "Project ID {project_id} 的详情接口失败，应用列表中也未找到该应用：{detail_error}"
+                        )
+                    })?;
+                return resolved_from_list_entry(&api_key, project);
+            }
+        }
+    }
+
+    if let Some(app_id) = selector.app_id {
+        let projects =
+            ling_plugin_app::list_all_projects(&cli.api_base_url, &api_key, None).await?;
+        let project = projects
+            .iter()
+            .find(|project| {
+                ling_plugin_app::project_app_id(project).as_deref() == Some(app_id.as_str())
+            })
+            .with_context(|| format!("未找到 App ID 为 {app_id} 且已关联 Product ID 的应用"))?;
+        return resolved_from_list_entry(&api_key, project);
+    }
+
+    let product_id = selector.product_id.ok_or_else(|| {
+        anyhow!(
+            "未指定应用：请传 --product-id、--project-id 或 --app-id，或在含 product_id 的 listenai.toml 项目目录内执行"
+        )
+    })?;
+
+    match management::resolve_project_id(&cli.api_base_url, &api_key, &product_id).await {
+        Ok(project_id) => Ok(ResolvedApp {
+            api_key,
+            product_id,
+            project_id,
+        }),
+        Err(resolve_error) => {
+            let projects =
+                ling_plugin_app::list_all_projects(&cli.api_base_url, &api_key, None).await?;
+            let project = projects
+                .iter()
+                .find(|project| {
+                    ling_plugin_app::project_product_id(project).as_deref()
+                        == Some(product_id.as_str())
+                })
+                .with_context(|| {
+                    format!(
+                        "Product ID {product_id} 的转换接口失败，应用列表中也未找到该应用：{resolve_error}"
+                    )
+                })?;
+            resolved_from_list_entry(&api_key, project)
+        }
+    }
+}
+
+fn resolved_from_list_entry(api_key: &str, project: &Value) -> Result<ResolvedApp> {
+    let project_id = ling_plugin_app::project_id(project).context("应用列表项缺少 Project ID")?;
+    resolved_from_project(api_key, &project_id, project)
+}
+
+fn resolved_from_project(api_key: &str, project_id: &str, project: &Value) -> Result<ResolvedApp> {
+    let product_id = ling_plugin_app::project_product_id(project).with_context(|| {
+        format!("Project ID {project_id} 没有关联 Product ID，不能由 ling 管理")
+    })?;
+    Ok(ResolvedApp {
+        api_key: api_key.to_owned(),
+        product_id,
+        project_id: project_id.to_owned(),
+    })
+}
+
+async fn get_app_detail(cli: &Ctx, app: &ResolvedApp) -> Result<Value> {
+    match management::get_project(&cli.api_base_url, &app.api_key, &app.project_id).await {
+        Ok(detail) => Ok(detail),
+        Err(project_error) => {
+            ling_plugin_app::inspect_product(&cli.api_base_url, &app.api_key, &app.product_id)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Project ID 详情接口不可用，按 Product ID 兼容读取也失败：{project_error}"
+                    )
+                })
+        }
+    }
+}
+
+fn clean_identifier(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_product_secret(value: Option<String>) -> Result<Option<String>> {
+    let Some(secret) = clean_identifier(value) else {
+        return Ok(None);
+    };
+    if secret.contains('*') {
+        anyhow::bail!("--product-secret 必须是完整产品密钥，不能使用脱敏后的 previewSecret");
+    }
+    Ok(Some(secret))
 }
 
 fn platform_write_unavailable(feature: &str) -> anyhow::Error {
     anyhow!(
         "「{feature}」的平台开放 API 尚未上线，请暂时在平台网页端操作：https://platform.listenai.com\n平台打通 API Key 授权链路后，ling 将在后续版本启用此命令。"
     )
+}
+
+fn web_only_operation(feature: &str, url: &str) -> anyhow::Error {
+    anyhow!("CLI 不执行「{feature}」；请前往网页确认影响范围并操作：{url}")
+}
+
+fn app_config_url(project_id: &str) -> String {
+    let mut url = reqwest::Url::parse(PLATFORM_APP_CONFIG_URL).expect("平台应用配置 URL 必须合法");
+    url.query_pairs_mut().append_pair("id", project_id);
+    url.into()
+}
+
+fn app_config_only_operation(feature: &str, project_id: &str) -> anyhow::Error {
+    web_only_operation(feature, &app_config_url(project_id))
+}
+
+fn kb_detail_url(index_id: &str) -> String {
+    let mut url = reqwest::Url::parse(&format!("{PLATFORM_KB_URL}/detail"))
+        .expect("平台知识库详情 URL 必须合法");
+    url.query_pairs_mut().append_pair("id", index_id);
+    url.into()
+}
+
+fn print_management_result(value: &Value, raw_json: bool) -> Result<()> {
+    if raw_json {
+        return print_json(value);
+    }
+    if let Some(data) = value.get("data") {
+        print_json(&redact_sensitive(data.clone()))
+    } else {
+        let message = value
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("操作成功");
+        eprintln!("{message}");
+        Ok(())
+    }
+}
+
+fn print_action_result(value: &Value, fallback: &str) -> Result<()> {
+    if let Some(data) = value.get("data") {
+        print_json(&redact_sensitive(data.clone()))
+    } else {
+        eprintln!(
+            "{}",
+            value
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or(fallback)
+        );
+        Ok(())
+    }
+}
+
+fn redact_sensitive(mut value: Value) -> Value {
+    match &mut value {
+        Value::Object(object) => {
+            for (key, item) in object.iter_mut() {
+                if matches!(
+                    key.as_str(),
+                    "secret"
+                        | "previewSecret"
+                        | "preview_secret"
+                        | "authorization"
+                        | "device_token"
+                ) {
+                    *item = Value::String("***".to_owned());
+                } else {
+                    *item = redact_sensitive(std::mem::take(item));
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                *item = redact_sensitive(std::mem::take(item));
+            }
+        }
+        _ => {}
+    }
+    value
+}
+
+fn render_ota_package(value: &Value) -> String {
+    let field = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| value.get(key))
+            .map(|value| match value {
+                Value::String(text) => text.clone(),
+                other => other.to_string(),
+            })
+            .unwrap_or_else(|| "-".to_owned())
+    };
+    [
+        ("ID", field(&["id", "package_id"])),
+        ("版本", field(&["version"])),
+        ("版本号", field(&["version_number", "versionNumber"])),
+        ("模式", field(&["ota_mode", "otaMode"])),
+        ("状态", field(&["status", "publish_status"])),
+        ("描述", field(&["description"])),
+    ]
+    .into_iter()
+    .map(|(label, value)| format!("{label}: {value}"))
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
+fn read_json_file(path: &std::path::Path) -> Result<Value> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("读取 JSON 文件失败：{}", path.display()))?;
+    serde_json::from_str(&text).with_context(|| format!("JSON 文件格式错误：{}", path.display()))
+}
+
+fn split_assignment(value: &str) -> Result<(String, String)> {
+    let (key, value) = value
+        .split_once('=')
+        .with_context(|| format!("参数必须是 key=value：{value}"))?;
+    let key = key.trim();
+    if key.is_empty() {
+        anyhow::bail!("参数 key 不能为空：{value}");
+    }
+    Ok((key.to_owned(), value.trim().to_owned()))
+}
+
+fn parse_json_literal(value: &str) -> Value {
+    match value.to_ascii_lowercase().as_str() {
+        "on" => Value::Bool(true),
+        "off" => Value::Bool(false),
+        _ => serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_owned())),
+    }
+}
+
+fn role_edit_key(key: &str) -> String {
+    match key {
+        "vcn" | "volume" | "speed" => format!("tts.{key}"),
+        _ => key.to_owned(),
+    }
+}
+
+fn json_body_from_input<F>(input: JsonEditArgs, map_key: F) -> Result<Value>
+where
+    F: Fn(&str) -> String,
+{
+    if let Some(file) = input.file {
+        let value = read_json_file(&file)?;
+        if !value.is_object() {
+            anyhow::bail!("--file 必须包含 JSON 对象");
+        }
+        return Ok(value);
+    }
+
+    let mut value = serde_json::json!({});
+    for assignment in input.set {
+        let (key, literal) = split_assignment(&assignment)?;
+        set_json_path(&mut value, &map_key(&key), parse_json_literal(&literal))?;
+    }
+    Ok(value)
+}
+
+fn set_json_path(target: &mut Value, path: &str, value: Value) -> Result<()> {
+    let segments = path
+        .split('.')
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if segments.is_empty() {
+        anyhow::bail!("配置 key 不能为空");
+    }
+    let mut current = target;
+    for segment in &segments[..segments.len() - 1] {
+        let object = current
+            .as_object_mut()
+            .context("配置路径与已有标量值冲突")?;
+        current = object
+            .entry((*segment).to_owned())
+            .or_insert_with(|| serde_json::json!({}));
+    }
+    current
+        .as_object_mut()
+        .context("配置目标不是 JSON 对象")?
+        .insert(segments[segments.len() - 1].to_owned(), value);
+    Ok(())
+}
+
+fn ensure_non_empty_object(value: &Value, command: &str) -> Result<()> {
+    match value.as_object() {
+        Some(object) if !object.is_empty() => Ok(()),
+        Some(_) => anyhow::bail!("{command} 需要至少一个 --set 或 --file"),
+        None => anyhow::bail!("{command} 请求必须是 JSON 对象"),
+    }
 }
 
 fn confirm(message: &str) -> Result<bool> {
@@ -1424,6 +3127,178 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn parses_app_create_management_contract() {
+        let cli = Cli::try_parse_from([
+            "ling",
+            "app",
+            "create",
+            "Demo",
+            "--template-id",
+            "12",
+            "--description",
+            "Voice app",
+            "--mode",
+            "custom",
+            "--json",
+        ])
+        .expect("parse app create");
+
+        match cli.command {
+            Command::App(app) => match app.command {
+                AppCommand::Create {
+                    name,
+                    description,
+                    template_id,
+                    mode,
+                    json,
+                } => {
+                    assert_eq!(name, "Demo");
+                    assert_eq!(description.as_deref(), Some("Voice app"));
+                    assert_eq!(template_id, 12);
+                    assert_eq!(mode, "custom");
+                    assert!(json);
+                }
+                other => panic!("expected app create command, got {other:?}"),
+            },
+            other => panic!("expected app command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn device_add_accepts_ids_or_file_but_not_both() {
+        Cli::try_parse_from(["ling", "app", "device", "add", "dev-1", "dev-2"])
+            .expect("parse device ids");
+        Cli::try_parse_from(["ling", "app", "device", "add", "--file", "devices.txt"])
+            .expect("parse device file");
+        let err = Cli::try_parse_from([
+            "ling",
+            "app",
+            "device",
+            "add",
+            "dev-1",
+            "--file",
+            "devices.txt",
+        ])
+        .expect_err("ids and file conflict");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn app_web_only_operations_link_to_the_project_config_page() {
+        assert_eq!(
+            app_config_url("project-123"),
+            "https://platform.listenai.com/appConfig?id=project-123"
+        );
+        assert_eq!(
+            app_config_url("project with spaces"),
+            "https://platform.listenai.com/appConfig?id=project+with+spaces"
+        );
+
+        let message = app_config_only_operation("删除角色 role-1", "project-123").to_string();
+        assert!(message.contains("CLI 不执行「删除角色 role-1」"));
+        assert!(message.contains("https://platform.listenai.com/appConfig?id=project-123"));
+    }
+
+    #[test]
+    fn knowledge_web_only_operations_link_to_the_knowledge_pages() {
+        assert_eq!(PLATFORM_KB_URL, "https://platform.listenai.com/datasets");
+        assert_eq!(
+            kb_detail_url("kb with spaces"),
+            "https://platform.listenai.com/datasets/detail?id=kb+with+spaces"
+        );
+    }
+
+    #[test]
+    fn app_delete_keeps_a_safe_web_only_command_entry() {
+        let cli = Cli::try_parse_from(["ling", "app", "delete", "--product-id", "product-123"])
+            .expect("parse app delete");
+
+        match cli.command {
+            Command::App(app) => {
+                assert_eq!(app.product_id.as_deref(), Some("product-123"));
+                assert!(matches!(app.command, AppCommand::Delete));
+            }
+            other => panic!("expected app command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn role_set_builds_nested_tts_json_and_literals() {
+        let body = json_body_from_input(
+            JsonEditArgs {
+                set: vec![
+                    "vcn=x4_yezi".to_owned(),
+                    "speed=60".to_owned(),
+                    "idle_guide.interval_ms=3000".to_owned(),
+                    "enabled=on".to_owned(),
+                ],
+                file: None,
+            },
+            role_edit_key,
+        )
+        .unwrap();
+        assert_eq!(body["tts"]["vcn"], "x4_yezi");
+        assert_eq!(body["tts"]["speed"], 60);
+        assert_eq!(body["idle_guide"]["interval_ms"], 3000);
+        assert_eq!(body["enabled"], true);
+    }
+
+    #[test]
+    fn tone_edit_rejects_file_and_set_together() {
+        let err = Cli::try_parse_from([
+            "ling",
+            "app",
+            "tone",
+            "edit",
+            "--set",
+            "network_suc=ok",
+            "--file",
+            "tones.json",
+        ])
+        .expect_err("file and set conflict");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn renders_ota_package_summary() {
+        let summary = render_ota_package(&serde_json::json!({
+            "id": "ota-1",
+            "version": "2.4.0",
+            "version_number": 240,
+            "ota_mode": "mandatory",
+            "status": "draft"
+        }));
+        assert!(summary.contains("ID: ota-1"));
+        assert!(summary.contains("版本号: 240"));
+        assert!(summary.contains("状态: draft"));
+    }
+
+    #[test]
+    fn config_interaction_modes_accept_names_and_numbers() {
+        assert_eq!(
+            interaction_mode_value(&serde_json::json!("oneshot")).unwrap(),
+            0
+        );
+        assert_eq!(
+            interaction_mode_value(&serde_json::json!("full-duplex")).unwrap(),
+            1
+        );
+        assert_eq!(interaction_mode_value(&serde_json::json!(2)).unwrap(), 2);
+        assert!(interaction_mode_value(&serde_json::json!(3)).is_err());
+    }
+
+    #[test]
+    fn default_output_redacts_nested_credentials() {
+        let value = redact_sensitive(serde_json::json!({
+            "product": {"secret": "product-secret"},
+            "servers": [{"authorization": "Bearer token", "name": "Weather"}]
+        }));
+        assert_eq!(value["product"]["secret"], "***");
+        assert_eq!(value["servers"][0]["authorization"], "***");
+        assert_eq!(value["servers"][0]["name"], "Weather");
+    }
+
+    #[test]
     fn parses_app_build_defaults() {
         let cli = Cli::try_parse_from(["ling", "app", "build"]).expect("parse app build");
 
@@ -1462,6 +3337,34 @@ mod tests {
     }
 
     #[test]
+    fn app_deploy_uses_only_global_api_base_url() {
+        let cli = Cli::try_parse_from([
+            "ling",
+            "--api-base-url",
+            "https://api.example.test/gateway",
+            "app",
+            "deploy",
+            "--version",
+            "v1.0.0",
+            "--dry-run",
+        ])
+        .expect("parse app deploy with global API base URL");
+        assert_eq!(cli.api_base_url, "https://api.example.test/gateway");
+
+        let err = Cli::try_parse_from([
+            "ling",
+            "app",
+            "deploy",
+            "--version",
+            "v1.0.0",
+            "--endpoint",
+            "https://other.example.test",
+        ])
+        .expect_err("deploy must not expose a separate endpoint override");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
     fn parses_app_init_defaults() {
         let cli = Cli::try_parse_from(["ling", "app", "init", "my-agent"]).expect("parse app init");
 
@@ -1494,6 +3397,119 @@ mod tests {
                 other => panic!("expected app command, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn app_project_and_app_ids_are_global_and_mutually_exclusive() {
+        for argv in [
+            vec!["ling", "app", "--project-id", "project-1", "inspect"],
+            vec!["ling", "app", "inspect", "--project-id", "project-1"],
+            vec!["ling", "app", "--app-id", "app-1", "role", "list"],
+            vec!["ling", "app", "device", "--app-id", "app-1", "quota"],
+        ] {
+            let cli = Cli::try_parse_from(argv.clone()).expect("parse alternate app id");
+            match cli.command {
+                Command::App(app) => {
+                    assert!(
+                        app.project_id.is_some() || app.app_id.is_some(),
+                        "argv: {argv:?}"
+                    );
+                }
+                other => panic!("expected app command, got {other:?}"),
+            }
+        }
+
+        let error = Cli::try_parse_from([
+            "ling",
+            "app",
+            "--product-id",
+            "product-1",
+            "--project-id",
+            "project-1",
+            "inspect",
+        ])
+        .expect_err("identifier flags must conflict");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn product_secret_belongs_only_to_request() {
+        for argv in [
+            vec![
+                "ling",
+                "app",
+                "--product-id",
+                "product-1",
+                "request",
+                "--product-secret",
+                "secret-1",
+                "--text",
+                "hello",
+            ],
+            vec![
+                "ling",
+                "app",
+                "request",
+                "--text",
+                "hello",
+                "--product-id",
+                "product-1",
+                "--product-secret",
+                "secret-1",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(argv.clone()).expect("parse app with product secret");
+            match cli.command {
+                Command::App(app) => {
+                    assert_eq!(app.product_id.as_deref(), Some("product-1"));
+                    match app.command {
+                        AppCommand::Request(request) => {
+                            assert_eq!(request.product_secret.as_deref(), Some("secret-1"));
+                        }
+                        other => panic!("expected app request command, got {other:?}"),
+                    }
+                }
+                other => panic!("expected app command, got {other:?}"),
+            }
+        }
+
+        let err = Cli::try_parse_from([
+            "ling",
+            "app",
+            "inspect",
+            "--product-id",
+            "product-1",
+            "--product-secret",
+            "secret-1",
+        ])
+        .expect_err("inspect must not accept product secret");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn product_secret_requires_an_unmasked_value() {
+        assert_eq!(
+            normalize_product_secret(Some("  complete-secret  ".to_owned()))
+                .unwrap()
+                .as_deref(),
+            Some("complete-secret")
+        );
+        assert!(normalize_product_secret(Some("abc*****xyz".to_owned())).is_err());
+        assert_eq!(
+            normalize_product_secret(Some("  ".to_owned())).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn inspect_positional_product_conflicts_with_identifier_flags() {
+        let selector = AppSelector {
+            project_id: Some("project-1".to_owned()),
+            ..AppSelector::default()
+        };
+        assert!(selector
+            .with_positional_product(Some("product-1".to_owned()))
+            .is_err());
     }
 
     #[test]
@@ -1570,11 +3586,106 @@ mod tests {
                 AppCommand::Request(request) => {
                     assert_eq!(request.text.as_deref(), Some("你好"));
                     assert_eq!(request.device_id, "ling-cli");
+                    assert!(!request.verbose);
+                    assert!(request.output_tts.is_none());
                 }
                 other => panic!("expected app request command, got {other:?}"),
             },
             other => panic!("expected app command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn app_request_accepts_verbose_output() {
+        let cli = Cli::try_parse_from(["ling", "app", "request", "--text", "你好", "--verbose"])
+            .expect("parse request verbose");
+        match cli.command {
+            Command::App(app) => match app.command {
+                AppCommand::Request(request) => assert!(request.verbose),
+                other => panic!("expected app request command, got {other:?}"),
+            },
+            other => panic!("expected app command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn app_request_accepts_tts_output_path() {
+        let cli = Cli::try_parse_from([
+            "ling",
+            "app",
+            "request",
+            "--text",
+            "你好",
+            "--output-tts",
+            "reply.mp3",
+        ])
+        .expect("parse request TTS output");
+        match cli.command {
+            Command::App(app) => match app.command {
+                AppCommand::Request(request) => {
+                    assert_eq!(
+                        request.output_tts.as_deref(),
+                        Some(std::path::Path::new("reply.mp3"))
+                    );
+                }
+                other => panic!("expected app request command, got {other:?}"),
+            },
+            other => panic!("expected app command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_tty_redraws_reply_around_other_frames() {
+        let mut state = RequestTimelineOutputState {
+            live_updates: true,
+            terminal_width: 80,
+            live_reply: None,
+        };
+
+        let first = state
+            .update_reply_output("今天天气")
+            .expect("TTY should draw streaming replies");
+        assert!(first.starts_with("\r\u{1b}[2K"));
+        assert!(first.contains("↓ 回复：今天天气"));
+        assert!(!first.ends_with('\n'));
+
+        let reply_line = state.reply_preview(
+            state
+                .live_reply
+                .as_deref()
+                .expect("reply should stay active"),
+        );
+        assert_eq!(
+            state.print_line_output("[12:00:00.000] ↓ TTS URL：https://example.com"),
+            format!("\r\u{1b}[2K[12:00:00.000] ↓ TTS URL：https://example.com\n{reply_line}")
+        );
+
+        let finished = state
+            .finish_reply_output(Some("今天天气"))
+            .expect("TTY should finish the active reply");
+        assert!(finished.starts_with("\r\u{1b}[2K"));
+        assert!(finished.ends_with('\n'));
+        assert!(state.live_reply.is_none());
+    }
+
+    #[test]
+    fn request_without_live_updates_prints_only_the_final_reply() {
+        let mut state = RequestTimelineOutputState {
+            live_updates: false,
+            terminal_width: 80,
+            live_reply: None,
+        };
+
+        assert!(state.update_reply_output("今天天气").is_none());
+        assert!(state.update_reply_output("今天天气很好").is_none());
+        let finished = state
+            .finish_reply_output(Some("今天天气很好"))
+            .expect("non-TTY should print the final reply");
+
+        assert!(finished.contains("↓ 回复：今天天气很好"));
+        assert_eq!(finished.lines().count(), 1);
+        assert!(!finished.contains('\u{1b}'));
+        assert!(state.live_reply.is_none());
     }
 
     #[test]
@@ -1806,5 +3917,6 @@ mod tests {
         let help = Cli::command().render_long_help().to_string();
         assert!(!help.contains("--docs-graphql-url"));
         assert!(!help.contains("--docs-base-url"));
+        assert!(!help.contains("--platform-base-url"));
     }
 }

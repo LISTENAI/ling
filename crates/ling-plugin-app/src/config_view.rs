@@ -30,9 +30,9 @@ pub fn render_device_quota(value: &Value) -> Result<String> {
     let product = project_data(value)
         .get("product")
         .context("项目详情缺少 product 字段")?;
-    let total = field(product, "assignedDeviceQuota");
-    let used = field(product, "consumedDeviceQuota");
-    let enforce = if bool_field(Some(product), "deviceAuthCheck") {
+    let total = first_field(product, &["assignedDeviceQuota", "assigned_device_quota"]);
+    let used = first_field(product, &["consumedDeviceQuota", "consumed_device_quota"]);
+    let enforce = if first_bool(product, &["deviceAuthCheck", "device_auth_check"]) {
         "开启"
     } else {
         "关闭"
@@ -44,10 +44,10 @@ pub fn render_device_quota(value: &Value) -> Result<String> {
 }
 
 pub fn device_auth_check(value: &Value) -> Option<bool> {
-    project_data(value)
-        .get("product")?
-        .get("deviceAuthCheck")
-        .and_then(Value::as_bool)
+    let product = project_data(value).get("product")?;
+    ["deviceAuthCheck", "device_auth_check"]
+        .iter()
+        .find_map(|key| product.get(key).and_then(Value::as_bool))
 }
 
 pub fn render_role_list(value: &Value) -> Result<String> {
@@ -229,6 +229,18 @@ fn yes_dash(flag: bool) -> String {
     } else {
         "-".to_owned()
     }
+}
+
+fn first_field(value: &Value, keys: &[&str]) -> String {
+    keys.iter()
+        .find_map(|key| value.get(key).map(|_| field(value, key)))
+        .unwrap_or_else(|| "-".to_owned())
+}
+
+fn first_bool(value: &Value, keys: &[&str]) -> bool {
+    keys.iter()
+        .find_map(|key| value.get(key).and_then(Value::as_bool))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

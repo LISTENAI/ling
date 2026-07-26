@@ -11,14 +11,13 @@ ListenAI 本地 CLI 工具。使用 ListenAI API Key 登录后，可以在终端
 - `ling app list / inspect`：查看平台应用列表与摘要。
 - `ling app init <name>`：初始化本地 Agent 项目并关联平台应用（写入 `listenai.toml`）。
 - `ling app build / dev / deploy`：构建、本地运行和部署 Agent 项目。
-- `ling app request`：向云端发起一次端云链路模拟请求，打印所有返回帧并输出 SID。
+- `ling app request`：向云端发起一次端云链路模拟请求，默认输出事件摘要并显示 SID；`--verbose` 输出协议级明细。
 - `ling app trace <sid>`：按 SID 查询既有请求记录。
-- `ling app device quota/query/enforce`：设备额度、授权查询与白名单状态。
-- `ling app role/interact-mode/kb/lexicon/tone`：查看应用的角色、交互模式、知识库、专业词汇与提示语配置。
-- `ling kb`：账号级知识库增删查 + 文档管理 + 文本检索。
+- `ling app create / device / ota / role / kb / lexicon / tone / mcp / config`：通过 `/v1` 管理平台应用。
+- `ling kb`：账号级知识库创建、文档添加、列表与文本检索。
 - `ling wiki search <关键词...>`：搜索 ListenAI 文档中心。
 
-> 部分管理写操作（创建应用、设备导入/白名单开关、OTA 管理、角色/提示语/专业词汇/MCP/唤醒词的增删改）依赖的平台开放 API 尚未上线，对应命令会给出明确提示；后端打通 API Key 授权链路后即可启用。
+> 生产安全：CLI 不执行应用、角色、MCP、知识库、知识库文档和专业词汇删除，也不执行设备列表、设备强制白名单开关以及 OTA 正式发布/撤销；对应命令只给出网页操作入口。未发布 OTA 包和 OTA 测试白名单仍可在 CLI 中删除。
 
 ## 环境依赖
 
@@ -201,9 +200,10 @@ ling --api-base-url https://xxx.listenai.com app list
 
 ```bash
 export LING_API_BASE_URL=https://xxx.listenai.com
-export LING_PLATFORM_BASE_URL=https://xxx-platform.listenai.com   # 影响 --list-vcn 等平台接口
-ling app list
+ling app list                              # 仅列出已关联 Product ID 的应用
 ```
+
+所有平台 HTTP、WebSocket 和部署请求都使用这一个 API 基地址；子命令不提供独立的环境地址。某个接口在不同环境中的临时可用性差异不会写入 CLI 的环境判断逻辑。
 
 ## 基础 AI 能力（ling ai）
 
@@ -258,15 +258,26 @@ ling app list
 ling app list --page 2 --page-size 20
 ling app list --service-type device
 ling app list --json
+ling app capabilities              # 查看服务端 CLI 管理 API 契约版本与能力
 
 ling app inspect <product_id>
 ling app inspect                     # 在含 listenai.toml 的项目目录内可省略 product_id
+ling app inspect --project-id <project_id>
+ling app inspect --app-id <app_id>
 ling app inspect <product_id> --json
+ling app delete --product-id <product_id>    # 仅提示前往应用配置网页
 ```
 
-`inspect` 展示：概览（项目/应用/产品 ID、密钥、计费）、角色、配置（唤醒词、主模型、版本、知识库/专业词汇/提示语/MCP 数量）、能力开关。
+`app list` 会在客户端过滤没有 Product ID 的 API 类应用，并基于过滤后的结果重新分页。
 
-**注意**：`inspect` 会明文展示产品密钥，不要将终端输出贴到公开日志或截图里。
+默认位置参数和 `--product-id` 都会先转换成 Project ID；转换接口尚未部署时，CLI 会从完整应用列表回退解析。`--project-id` 直接定位 Project，`--app-id` 从应用列表解析对应的 Project 和 Product。三种显式 ID 参数互斥。
+
+`inspect` 展示：概览（项目/应用/产品 ID、服务端返回时包含产品密钥、计费）、角色、配置（唤醒词、主模型、版本、知识库/专业词汇/提示语/MCP 数量）、能力开关。
+
+`app delete` 保留命令入口但绝不调用删除 API，只提示前往
+`https://platform.listenai.com/appConfig?id=<project_id>` 确认影响范围并操作。
+
+**注意**：部分服务端不会在应用详情中返回产品密钥。需要 Secret 时，请由用户本人前往平台网页的应用详情查看；不要把 Secret 或包含它的 `inspect` 输出贴到公开日志、截图或 issue 中。
 
 ### 项目初始化与关联
 
@@ -297,22 +308,30 @@ ling app deploy \
 
 ### 端云链路模拟请求
 
-对云端发起一次真实的端云交互（设备授权 + `/v1/dispatch`），并把所有链路返回帧原样打印：
+对云端发起一次真实的端云交互（设备授权 + `/v1/interaction`），并把所有链路返回帧原样打印。`request` 在会话参数中显式设置 `llm_ws_version=2.0`，确保云端内部 LLM WebSocket 使用 v2；入口路径中的 `/v1/interaction` 不代表内部 LLM 链路版本：
 
 ```bash
-ling app request --text 你好，介绍一下你自己
-ling app request --file hello.pcm                        # 走 ASR + NLU + TTS 全链路
-ling app request --text 你好 --device-id <device_id>     # 应用开启白名单时需用已导入的设备 ID
-ling app request --text 你好 --llm-app <app_id>          # 多应用场景指定应用
+ling app --product-id <product_id> request --product-secret '<product_secret>' --text 你好
+ling app --product-id <product_id> request --product-secret '<product_secret>' --file hello.pcm
+ling app --product-id <product_id> request --product-secret '<product_secret>' --text 你好 --device-id <device_id>
+ling app --product-id <product_id> request --product-secret '<product_secret>' --text 你好 --llm-app <app_id>
+ling app --product-id <product_id> request --product-secret '<product_secret>' --text 你好 --verbose
+ling app --product-id <product_id> request --product-secret '<product_secret>' --text 你好 --output-tts reply.mp3
 ```
 
-输出为 JSON 帧流（`connected`/`started`/`result`(iat/nlp/tts)/`finish`），便于管道处理；结束后在 stderr 输出本次请求的 `sid`。
+`--product-secret` 是 `request` 专用参数，仅用于设备鉴权，其他 `app` 命令不接受；若应用详情已返回完整 Secret，可以省略。也可在自己的终端临时设置 `LING_PRODUCT_SECRET`，避免把 Secret 留在 shell 历史中。不要把真实 Secret 粘贴到聊天、日志或 issue。
 
-按 SID 回查请求记录（默认检索最近 24 小时，`--hours` 调整时间窗）：
+默认输出带本地时间戳的完整双向事件摘要，`↑` 表示 CLI 上行的创建会话、文本/音频数据、上传结束或 MCP 结果，`↓` 表示云端下行的连接、会话 SID、识别结果、回复文本 URL、TTS URL、MCP 调用和结束状态。收到文本 URL 后会并行读取 text_streaming SSE。在 TTY 中，累计回复保持为一条活动行并原位更新；预览按终端宽度限制为单行，过长时显示省略号和最新尾部，文本流结束后再打印一次完整回复。其他帧到达时会先打印该帧，再重画当前预览。输出被管道或外部工具捕获时，不使用 ANSI 控制序列，也不打印中间增长过程，只在文本流结束后输出一次完整回复。时序结束后空一行输出 SID、TTS URL、文本 URL、耗时和双向帧统计。interaction 不返回 token 用量，`request` 不会额外调用 trace 补充统计。
+
+追加 `--verbose` 时，每行按 `[时间] ↑|↓ 协议帧` 输出 WebSocket 协议级明细：JSON 帧正文保持原文，二进制帧显示字节数和可选文本；text_streaming 会按事件边界输出 SSE，每帧压缩为一行，原始 `event:`/`data:` 行之间使用 ` | ` 分隔。verbose 不做增长预览，并在 SSE 结束后打印一次完整回复。由于方向、时间和 SSE 标记是诊断所必需的，该输出不是严格 JSON，`request` 不提供 `--json`。
+
+`--output-tts <FILE>` 下载本次交互返回的第一个 TTS URL。输出目录不存在时会自动创建；下载完成后末尾摘要显示文件路径和字节数。
+
+按 SID 回查 Agent 执行日志。CLI 优先调用按 SID 直查接口；旧服务端没有该接口时，才兼容扫描请求记录（默认最近 7 天，`--hours` 调整时间窗）：
 
 ```bash
 ling app trace <sid>                 # 概览 + 时间线（请求到达/技能命中/工具进出参/回复/响应完成）
-ling app trace <sid> --full          # 追加完整请求上下文与工具结果明细
+ling app trace <sid> --full          # 追加完整请求上下文与工具结果明细（也可用 --verbose）
 ling app trace <sid> --hours 2
 ling app trace <sid> --json          # 输出完整原始记录
 ```
@@ -321,50 +340,102 @@ ling app trace <sid> --json          # 输出完整原始记录
 
 ```bash
 ling app device quota                    # 总额度 / 已使用 / 强制白名单状态
+ling app device list                     # 仅提示前往应用配置网页
+ling app device add <device_id>...
+ling app device add --file devices.txt   # 每行一个 device_id
 ling app device query <device_id>        # 查询设备是否已授权
 ling app device enforce                  # 查看强制白名单开关
+ling app device enforce on               # 仅提示前往应用配置网页
+ling app device enforce off              # 仅提示前往应用配置网页
 ```
 
-`device list/add`、`device enforce on|off` 依赖的平台开放 API 尚未上线。
+网页操作统一指向当前应用：`https://platform.listenai.com/appConfig?id=<project_id>`。
 
-### 应用配置查看
+### 应用与配置管理
 
-以下命令从应用详情中读取配置，均支持 `--json`；`--product-id` 统一放在 `ling app` 之后（紧跟 action 之后也兼容），项目目录内可省略：
+查询命令支持 `--json`。`--product-id`、`--project-id`、`--app-id` 可放在 `ling app` 之后或 action 之后；三者互斥。在含 `listenai.toml` 的项目目录内可全部省略，此时读取顶层 `product_id`。
 
 ```bash
-ling app --product-id <product_id> role list   # 角色列表（发音人/语速/音量/默认角色/唤醒词）
-ling app interact-mode         # 当前唤醒交互模式（oneshot / half-duplex / full-duplex）
-ling app kb list               # 应用关联的知识库
-ling app lexicon list          # 专业词汇
-ling app tone show             # 设备提示语表
+ling app create Demo --template-id 12 --description "语音助手"
+
+ling app role list
+ling app role add 助手 --set persona='"简洁回答"' --set vcn=x4_yezi
+ling app role edit <role_id> --set speed=60 --set volume=50
+ling app role set-default <role_id>
+
+ling app interact-mode
+ling app interact-mode full-duplex
+
+ling app kb list
+ling app kb link <index_id>
+ling app kb unlink <index_id>
+
+ling app lexicon list
+ling app lexicon add ListenAI
+
+ling app tone show
+ling app tone edit --set network_suc="网络连接成功"
+ling app tone edit --reset network_suc
+ling app tone edit --reset-all
+ling app tone edit --file tones.json
+
+ling app mcp list
+ling app mcp add Weather --server-id weather --transport http --url https://mcp.example.com
+ling app mcp edit <mcp_id> --set description='"天气服务"'
+ling app mcp enable <mcp_id>
+ling app mcp disable <mcp_id>
+
+ling app config show
+ling app config edit --set interaction-mode=half-duplex
+ling app config edit --set system-prompt='"你是语音助手"'
+ling app config edit --set endpoint=https://model.example/v1 --set model=model-name
+ling app config reset-model
+ling app config test-model --endpoint https://model.example/v1 --model model-name
 ```
 
-对应的写操作（`role add/edit/...`、`tone edit`、`interact-mode <mode>`、`ling app mcp`、`ling app ota`、`ling app create`）依赖的平台开放 API 尚未上线，执行时会给出明确提示。
+角色与 MCP 的 `--set` 支持点路径和 JSON 字面量；`on/off` 会解析为布尔值。也可用 `--file <json>` 提交对象。
+
+### OTA
+
+```bash
+ling app ota list
+ling app ota upload firmware.bin --version 2.4.0 --version-number 240 --ota-mode mandatory
+ling app ota get <package_id>
+ling app ota edit <package_id> --description "修订说明"
+ling app ota delete <package_id> --yes        # 仅未发布包；服务端再次校验状态
+ling app ota whitelist list
+ling app ota whitelist add <device_id>
+ling app ota whitelist delete <device_id>
+```
+
+`ota publish/revoke` 不会调用发布接口，只提示前往当前 Project 的应用配置网页。删除未正式发布的 OTA 包、维护 OTA 测试白名单是需求明确允许的受限操作。
 
 ## 知识库（ling kb）
 
 ```bash
 ling kb list
 ling kb create 产品手册
-ling kb delete <index_id>                # 交互确认；--yes 跳过
+ling kb delete <index_id>                # 仅提示前往网页操作
 ling kb doc <index_id> list
 ling kb doc <index_id> add --name 说明书.txt --url https://example.com/说明书.txt
-ling kb doc <index_id> delete <doc_id>...
+ling kb doc <index_id> delete <doc_id>... # 仅提示前往网页操作
 ling kb query <index_id> 空调怎么开
 ling kb query <index_id> 空调怎么开 --limit 5 --threshold 0.3
 ```
 
+知识库删除只提示前往 `https://platform.listenai.com/datasets`；文档删除指向
+`https://platform.listenai.com/datasets/detail?id=<index_id>`。CLI 不调用对应的删除 API。
+
 ## 真实设备 PID/SID 切换
 
-切换真实设备 PID/SID 时，不需要拉取端侧项目，也不需要编译固件。先用 `ling` 获取产品密钥，再通过 `adb shell` 写入设备：
+切换真实设备 PID/SID 时，不需要拉取端侧项目，也不需要编译固件。Product ID 可由 `ling app list` 获取；请由用户本人前往平台网页的应用详情查看产品密钥。确认目标后，由用户在自己的终端通过 `adb shell` 写入设备：
 
 ```bash
-ling app inspect <product_id>
 adb shell device set_pid <product_id>
 adb shell device set_sid <product_secret>
 ```
 
-其中 `ling app inspect <product_id>` 输出中的“产品 ID”作为 PID，“密钥”作为 SID。`<product_secret>` 属于敏感信息，不要贴到公开日志、截图或 issue 中。
+`<product_secret>` 属于敏感信息，不要贴到公开日志、截图或 issue 中。
 
 ## 文档中心搜索
 
