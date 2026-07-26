@@ -16,6 +16,14 @@
 
 ## 安装
 
+先运行：
+
+```bash
+ling --version
+```
+
+成功时继续使用当前版本，不要无故重装。命令缺失时安装官方 Release。
+
 macOS / Linux：
 
 ```bash
@@ -33,6 +41,9 @@ macOS 也可使用 Homebrew：
 ```bash
 brew install LISTENAI/tap/ling
 ```
+
+安装后再次运行 `ling --version`。安装器已完成二进制运行检查；如果当前
+shell 仍找不到命令，按安装器输出处理 PATH。
 
 ## 登录与账号
 

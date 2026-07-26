@@ -4,34 +4,71 @@
 
 ## 目录
 
+- [CLI 检测与安装](#0-cli-检测与安装)
 - [登录与状态确认](#1-登录与状态确认)
 - [开发前方案确认](#2-开发前方案确认)
 - [云端 Agent 工作流](#3-云端-agent-工作流)
 - [真实设备 PID/SID 切换](#4-真实设备-pidsid-切换)
 - [端侧固件工作流](#5-端侧固件工作流)
 
+## 0. CLI 检测与安装
+
+先检测当前环境，不要根据目录或历史对话猜测：
+
+```bash
+ling --version
+```
+
+命令成功时继续使用当前版本。除非用户明确要求更新，否则不要重装。
+
+命令不存在或无法执行时，先说明将从 `LISTENAI/ling` 的 GitHub Release
+下载适配当前系统的官方二进制，再按平台执行：
+
+macOS / Linux：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LISTENAI/ling/main/install.sh | sh
+```
+
+Windows PowerShell：
+
+```powershell
+irm https://raw.githubusercontent.com/LISTENAI/ling/main/install.ps1 | iex
+```
+
+安装属于联网和用户目录写入操作，使用运行环境提供的授权机制。Agent 能执行
+时直接完成，不要让用户代为复制命令。不要为了安装 CLI 克隆仓库、运行
+`cargo install` 或构建开发版本。
+
+安装后验证：
+
+```bash
+ling --version
+```
+
+macOS / Linux 安装器默认写入 `$HOME/.local/bin/ling`；Windows 默认写入
+`$HOME/bin/ling.exe`。如果当前 shell 尚未刷新 PATH，先用该绝对路径验证。
+不要擅自修改 shell 配置文件；向用户说明安装器给出的 PATH 提示即可。
+
 ## 1. 登录与状态确认
 
-1. 先确认 CLI 可用：
-
-   ```bash
-   ling --version
-   ```
-
-2. 如果用户未登录，提示用户打开 `https://platform.listenai.com/keys` 获取 API Key。
-3. 运行登录命令，让用户在交互提示中粘贴 API Key：
+1. 如果用户未登录，提示用户打开 `https://platform.listenai.com/keys` 获取
+   API Key。
+2. 运行登录命令，让用户在交互提示中粘贴 API Key：
 
    ```bash
    ling login
    ```
 
-4. 登录后验证账号：
+3. 登录后验证账号：
 
    ```bash
    ling account
    ```
 
-5. 告诉用户下一步可以执行：`ling ai models`、`ling app list`、`ling app init <agent_name> --product-id <product_id>`、或设备 PID/SID 切换流程。
+4. 告诉用户下一步可以执行：`ling ai models`、`ling app list`、
+   `ling app init <agent_name> --product-id <product_id>`、或设备 PID/SID
+   切换流程。
 
 不要在回复、日志或截图中展示完整 API Key。
 
