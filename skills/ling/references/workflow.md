@@ -99,7 +99,9 @@ cd <agent_name>
 
 `ling app init` 会把目标应用写入项目根目录的 `listenai.toml`。如果用户尚未确定应用，先用 `ling app list` 查询；不要替用户猜测 `<product_id>`。
 
-应用定位默认使用 Product ID，并自动转换到云端 Project ID。也可以显式传 `--project-id <project_id>` 或 `--app-id <app_id>`；三种 ID 参数互斥。`ling app list` 只展示已关联 Product ID、可由 CLI 管理的应用。
+应用定位默认使用 Product ID。也可以显式传 `--project-id <project_id>` 或
+`--app-id <app_id>`；三种 ID 参数互斥。`ling app list` 只展示已关联 Product
+ID、可由 CLI 管理的应用。
 
 高危操作遵循原始需求边界：原则上不由 CLI 删除资源，OTA 正式发布/撤销、设备强制白名单切换等也只引导网页操作；删除未正式发布的 OTA 包和维护 OTA 测试白名单是明确例外。`ling app delete` 保留命令入口但绝不调用删除 API。应用级提示链接必须包含已解析的 Project ID：`https://platform.listenai.com/appConfig?id=<project_id>`。
 
@@ -135,11 +137,18 @@ ling app deploy --product-id <product_id> --version <version> --dry-run
    ```
 
    也可以临时设置 `LING_PRODUCT_SECRET`，避免 Secret 进入 shell 历史。
-   默认输出带方向的双向事件摘要；逐帧诊断使用 `--verbose`，保存语音使用
+   默认输出带方向的双向事件摘要；逐事件诊断使用 `--verbose`，保存语音使用
    `--output-tts <FILE>`。完整输出约定见
    [命令参考](commands.md#端云请求与日志)。
-   `request` 显式设置 `llm_ws_version=2.0`；设备入口
-   `/v1/interaction` 的路径版本不代表内部 LLM 链路版本。
+   请求汇总和鉴权错误会显示 CLI 使用的 Device ID。默认不要传
+   `--device-id` 或 `--llm-app`。如果鉴权返回 `20105`，先询问用户是否授权
+   将错误中显示的 Device ID 导入当前应用；明确同意后才执行：
+
+   ```bash
+   ling app --product-id <product_id> device add <device_id>
+   ```
+
+   导入设备不代表允许 Agent 开启或关闭强制白名单。
 4. 绑定真实设备时，将 Product ID 作为 PID，将产品密钥作为 SID，由用户在自己的终端写入。交互式：
 
    ```bash

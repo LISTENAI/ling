@@ -711,6 +711,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dirs",
+ "getrandom 0.3.4",
  "libc",
  "ling-core",
  "ling-plugin-ai",

@@ -2,10 +2,11 @@
 //!
 //! 流程（参考文档「大模型端云交互链路协议」）：
 //! 1. POST /v1/auth/tokens {productId, deviceId, curtime, checksum=md5(secret+curtime)} → 设备 token
-//! 2. wss /v1/interaction?param=base64({auth_id, llm_app?})，Authorization: Bearer {token}
-//! 3. start（显式指定内部 LLM WebSocket v2）→ 上传数据 → end → 打印所有下行帧直至 finish
+//! 2. wss /v1/interaction?param=base64({auth_id,scene,mcp,type,...,llm_app?})，Authorization: Bearer {token}
+//! 3. start → 上传数据 → 打印所有下行帧直至 finish
 
-use anyhow::{anyhow, bail, Context, Result};
+use crate::device_mcp;
+use anyhow::{bail, Context, Result};
 use base64::Engine;
 use chrono::Local;
 use futures_util::{SinkExt, StreamExt};
@@ -13,16 +14,20 @@ use md5::{Digest, Md5};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{client::IntoClientRequest, http::header, Message},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const AUDIO_CHUNK_BYTES: usize = 1280 * 4; // 160ms of 16k 16bit mono PCM
-const AUDIO_CHUNK_PACE_MS: u64 = 40; // 4x realtime; blasting breaks server-side session init
+const PCM_BYTES_PER_SECOND: usize = 16_000 * 2;
+const AUDIO_CHUNK_BYTES: usize = 2_560; // 80ms of 16k 16bit mono PCM
 const LLM_WS_VERSION: &str = "2.0";
-const SESSION_READY_GRACE: Duration = Duration::from_millis(1_000);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const SESSION_START_TIMEOUT: Duration = Duration::from_secs(15);
+const SESSION_FINISH_TIMEOUT: Duration = Duration::from_secs(180);
 const TEXT_STREAM_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone)]
@@ -34,9 +39,9 @@ pub enum RequestInput {
 
 #[derive(Debug, Clone)]
 pub struct RequestOptions {
-    /// 设备唯一标识（auth_id / deviceId）
+    /// 设备鉴权使用的唯一标识（deviceId）
     pub device_id: String,
-    /// 多应用场景下指定应用 id（llm_app）
+    /// 定向调试时覆盖应用 id（llm_app）
     pub llm_app: Option<String>,
 }
 
@@ -558,6 +563,54 @@ impl SseDecoder {
     }
 }
 
+fn connection_params(opts: &RequestOptions) -> Value {
+    let mut params = json!({
+        "auth_id": opts.device_id,
+        "scene": "main",
+        "mcp": true,
+        "tool_protocol_version": "v2",
+        "type": "fullduplex",
+        "firmware_info": {
+            "type": "ling-cli",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+    });
+    if let Some(llm_app) = &opts.llm_app {
+        params["llm_app"] = json!(llm_app);
+    }
+    params
+}
+
+fn text_payload(text: &str) -> Vec<u8> {
+    text.as_bytes().to_vec()
+}
+
+fn audio_chunk_duration(bytes: usize) -> Duration {
+    Duration::from_secs_f64(bytes as f64 / PCM_BYTES_PER_SECOND as f64)
+}
+
+async fn respond_to_device_mcp<S>(
+    ws: &mut WebSocketStream<S>,
+    frame: &Value,
+    on_event: &mut impl FnMut(RequestEvent),
+) -> Result<bool>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let Some(response) = device_mcp::response_for_frame(frame) else {
+        return Ok(false);
+    };
+    let body = response.to_string();
+    ws.send(Message::Text(body.clone()))
+        .await
+        .context("回传模拟设备 MCP 结果失败")?;
+    on_event(RequestEvent::Frame {
+        direction: RequestDirection::Upstream,
+        body,
+    });
+    Ok(true)
+}
+
 /// 用产品密钥换取设备接入 token（POST /v1/auth/tokens）。
 pub async fn device_auth_token(
     api_base_url: &str,
@@ -591,7 +644,7 @@ pub async fn device_auth_token(
     let body = response.text().await.unwrap_or_default();
     if !status.is_success() {
         bail!(
-            "设备授权失败：HTTP {status} {body}\n提示：若应用开启了强制白名单，请使用已导入的设备 ID（--device-id）"
+            "设备授权失败：HTTP {status} {body}\n提示：本次 Device ID 为 {device_id}；若应用开启了强制白名单，请先导入该 ID，或用 --device-id 指定已导入的设备 ID"
         );
     }
     let value: Value = serde_json::from_str(&body).context("设备授权响应不是合法 JSON")?;
@@ -614,10 +667,7 @@ pub async fn interaction_request(
     let token =
         device_auth_token(api_base_url, product_id, product_secret, &opts.device_id).await?;
 
-    let mut param = json!({"auth_id": opts.device_id});
-    if let Some(llm_app) = &opts.llm_app {
-        param["llm_app"] = json!(llm_app);
-    }
+    let param = connection_params(opts);
     let param = base64::engine::general_purpose::STANDARD.encode(param.to_string());
 
     let mut url = ling_core::ws_url(api_base_url, "/v1/interaction")?;
@@ -635,14 +685,21 @@ pub async fn interaction_request(
             .context("设备 token 含有非法字符")?,
     );
 
-    let (mut ws, _) = connect_async(request)
+    let (mut ws, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
         .await
+        .context("连接端云链路超时")?
         .context("端云链路 WebSocket 连接失败")?;
 
     // 等待 connected
+    let connected_deadline = tokio::time::Instant::now() + CONNECT_TIMEOUT;
     loop {
-        match ws.next().await {
-            Some(Ok(Message::Text(body))) => {
+        let message = tokio::time::timeout_at(connected_deadline, ws.next())
+            .await
+            .context("等待链路连接响应超时")?
+            .context("链路未返回连接响应")?
+            .context("读取链路连接响应失败")?;
+        match message {
+            Message::Text(body) => {
                 let frame: Value = serde_json::from_str(&body).context("链路响应不是合法 JSON")?;
                 let action = frame.get("action").and_then(Value::as_str);
                 let failed = action == Some("error");
@@ -651,6 +708,7 @@ pub async fn interaction_request(
                     direction: RequestDirection::Downstream,
                     body,
                 });
+                respond_to_device_mcp(&mut ws, &frame, &mut on_event).await?;
                 if connected {
                     break;
                 }
@@ -662,10 +720,17 @@ pub async fn interaction_request(
                     );
                 }
             }
-            Some(Ok(Message::Close(frame))) => bail!("链路提前关闭：{frame:?}"),
-            Some(Ok(_)) => continue,
-            Some(Err(err)) => return Err(anyhow!(err).context("读取链路连接响应失败")),
-            None => bail!("链路未返回连接响应"),
+            Message::Binary(bytes) => on_event(RequestEvent::Binary {
+                direction: RequestDirection::Downstream,
+                bytes: bytes.len(),
+                text: None,
+            }),
+            Message::Ping(bytes) => ws
+                .send(Message::Pong(bytes))
+                .await
+                .context("响应链路 Ping 失败")?,
+            Message::Close(frame) => bail!("链路在连接阶段提前关闭：{frame:?}"),
+            _ => {}
         }
     }
 
@@ -680,80 +745,71 @@ pub async fn interaction_request(
         body: start,
     });
 
-    // `started` 表示服务端已经完成会话初始化。尤其是自定义 Agent 首次冷启动
-    // 时，若在该确认帧前发送文本和 end，服务端可能直接结束会话而不把消息
-    // 交给 Agent。先等待确认，也让音频首包和文本请求遵循相同的协议时序。
-    loop {
-        match ws.next().await {
-            Some(Ok(Message::Text(body))) => {
-                let frame = serde_json::from_str::<Value>(&body).ok();
-                let action = frame
-                    .as_ref()
-                    .and_then(|frame| frame.get("action"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                let error_code = frame
-                    .as_ref()
-                    .and_then(|frame| frame.get("code"))
-                    .map(|code| {
-                        code.as_str()
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| code.to_string())
-                    });
-                let error_desc = frame
-                    .as_ref()
-                    .and_then(|frame| frame.get("desc"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                on_event(RequestEvent::Frame {
-                    direction: RequestDirection::Downstream,
-                    body,
-                });
-                match action.as_deref() {
-                    Some("started") => break,
-                    Some("error") => {
-                        bail!(
-                            "创建会话失败：code={} {}",
-                            error_code.unwrap_or_else(|| "-".into()),
-                            error_desc.unwrap_or_else(|| "-".into())
-                        );
-                    }
-                    Some("finish") => bail!("服务端在会话开始前结束了请求"),
-                    _ => continue,
-                }
-            }
-            Some(Ok(Message::Binary(bytes))) => on_event(RequestEvent::Binary {
-                direction: RequestDirection::Downstream,
-                bytes: bytes.len(),
-                text: None,
-            }),
-            Some(Ok(Message::Close(frame))) => {
-                bail!("链路在会话开始前关闭：{frame:?}")
-            }
-            Some(Ok(_)) => continue,
-            Some(Err(err)) => return Err(anyhow!(err).context("等待会话开始响应失败")),
-            None => bail!("链路未返回会话开始响应"),
-        }
-    }
-
-    // `started` 只确认 interaction 会话已创建；自定义 Agent 的 bundle 仍可能
-    // 正在冷启动，且当前协议没有单独的 agent-ready 帧。给 host 一个很短的
-    // 就绪窗口，避免文本首包在 onConnect 前到达后被丢弃。
-    tokio::time::sleep(SESSION_READY_GRACE).await;
-
-    // 上传数据
+    // 文本会话遵循端侧时序：start 后立即上传一个二进制文本消息，不再发送
+    // end。只发送正文长度，避免把 C 字符串的 NUL 终止符带入模型输入。
+    // 音频会话仍等待 started 后按真实时长上传，并以 end 收尾。
     match input {
         RequestInput::Text(text) => {
-            ws.send(Message::Binary(text.as_bytes().to_vec()))
+            let payload = text_payload(text);
+            ws.send(Message::Binary(payload.clone()))
                 .await
                 .context("上传文本数据失败")?;
             on_event(RequestEvent::Binary {
                 direction: RequestDirection::Upstream,
-                bytes: text.len(),
+                bytes: payload.len(),
                 text: Some(text.clone()),
             });
         }
         RequestInput::Audio(audio) => {
+            let started_deadline = tokio::time::Instant::now() + SESSION_START_TIMEOUT;
+            loop {
+                let message = tokio::time::timeout_at(started_deadline, ws.next())
+                    .await
+                    .context("等待会话开始响应超时")?
+                    .context("链路未返回会话开始响应")?
+                    .context("等待会话开始响应失败")?;
+                match message {
+                    Message::Text(body) => {
+                        let frame: Value =
+                            serde_json::from_str(&body).context("链路响应不是合法 JSON")?;
+                        let action = frame.get("action").and_then(Value::as_str);
+                        let failed = action == Some("error");
+                        let started = action == Some("started");
+                        on_event(RequestEvent::Frame {
+                            direction: RequestDirection::Downstream,
+                            body,
+                        });
+                        respond_to_device_mcp(&mut ws, &frame, &mut on_event).await?;
+                        if started {
+                            break;
+                        }
+                        if failed {
+                            bail!(
+                                "创建会话失败：code={} {}",
+                                scalar_at(&frame, &["/code"]).unwrap_or_else(|| "-".into()),
+                                string_at(&frame, &["/desc"]).unwrap_or("-")
+                            );
+                        }
+                        if action == Some("finish") {
+                            bail!("服务端在音频上传前结束了请求");
+                        }
+                    }
+                    Message::Binary(bytes) => on_event(RequestEvent::Binary {
+                        direction: RequestDirection::Downstream,
+                        bytes: bytes.len(),
+                        text: None,
+                    }),
+                    Message::Ping(bytes) => ws
+                        .send(Message::Pong(bytes))
+                        .await
+                        .context("响应链路 Ping 失败")?,
+                    Message::Close(frame) => {
+                        bail!("链路在会话开始前关闭：{frame:?}")
+                    }
+                    _ => {}
+                }
+            }
+
             for chunk in audio.chunks(AUDIO_CHUNK_BYTES) {
                 ws.send(Message::Binary(chunk.to_vec()))
                     .await
@@ -763,65 +819,60 @@ pub async fn interaction_request(
                     bytes: chunk.len(),
                     text: None,
                 });
-                tokio::time::sleep(std::time::Duration::from_millis(AUDIO_CHUNK_PACE_MS)).await;
+                tokio::time::sleep(audio_chunk_duration(chunk.len())).await;
             }
+            let end = json!({"action": "end"}).to_string();
+            ws.send(Message::Text(end.clone()))
+                .await
+                .context("发送上传结束指令失败")?;
+            on_event(RequestEvent::Frame {
+                direction: RequestDirection::Upstream,
+                body: end,
+            });
         }
     }
-    let end = json!({"action": "end"}).to_string();
-    ws.send(Message::Text(end.clone()))
-        .await
-        .context("发送上传结束指令失败")?;
-    on_event(RequestEvent::Frame {
-        direction: RequestDirection::Upstream,
-        body: end,
-    });
 
-    // 接收所有帧直至 finish / 关闭
-    while let Some(message) = ws.next().await {
+    // 接收所有帧直至明确的 finish。异常关闭和读取错误不能伪装成成功。
+    let finish_deadline = tokio::time::Instant::now() + SESSION_FINISH_TIMEOUT;
+    loop {
+        let message = tokio::time::timeout_at(finish_deadline, ws.next())
+            .await
+            .context("等待会话结束超时")?
+            .context("链路在返回 finish 前结束")?
+            .context("读取端云链路响应失败")?;
         match message {
-            Ok(Message::Text(body)) => {
-                let frame = serde_json::from_str::<Value>(&body).ok();
-                let action = frame
-                    .as_ref()
-                    .and_then(|frame| frame.get("action"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                let error_code = frame
-                    .as_ref()
-                    .and_then(|frame| frame.get("code"))
-                    .map(|code| {
-                        code.as_str()
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| code.to_string())
-                    });
-                let error_desc = frame
-                    .as_ref()
-                    .and_then(|frame| frame.get("desc"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
+            Message::Text(body) => {
+                let frame: Value = serde_json::from_str(&body).context("链路响应不是合法 JSON")?;
+                let action = frame.get("action").and_then(Value::as_str);
                 on_event(RequestEvent::Frame {
                     direction: RequestDirection::Downstream,
                     body,
                 });
-                match action.as_deref() {
-                    Some("finish") => break,
-                    Some("error") => {
-                        bail!(
-                            "链路请求失败：code={} {}",
-                            error_code.unwrap_or_else(|| "-".into()),
-                            error_desc.unwrap_or_else(|| "-".into())
-                        );
-                    }
-                    _ => {}
+                respond_to_device_mcp(&mut ws, &frame, &mut on_event).await?;
+                if action == Some("finish") {
+                    break;
+                }
+                if action == Some("error") {
+                    bail!(
+                        "链路请求失败：code={} {}",
+                        scalar_at(&frame, &["/code"]).unwrap_or_else(|| "-".into()),
+                        string_at(&frame, &["/desc"]).unwrap_or("-")
+                    );
                 }
             }
-            Ok(Message::Binary(bytes)) => on_event(RequestEvent::Binary {
+            Message::Binary(bytes) => on_event(RequestEvent::Binary {
                 direction: RequestDirection::Downstream,
                 bytes: bytes.len(),
                 text: None,
             }),
-            Ok(Message::Close(_)) | Err(_) => break,
-            Ok(_) => continue,
+            Message::Ping(bytes) => ws
+                .send(Message::Pong(bytes))
+                .await
+                .context("响应链路 Ping 失败")?,
+            Message::Close(frame) => {
+                bail!("链路在返回 finish 前关闭：{frame:?}")
+            }
+            _ => {}
         }
     }
 
@@ -841,7 +892,10 @@ fn start_frame(input: &RequestInput) -> Value {
             "features": ["nlu", "tts"],
         }),
     };
-    params["nlu_properties"] = json!({"llm_ws_version": LLM_WS_VERSION});
+    params["nlu_properties"] = json!({
+        "custom": {},
+        "llm_ws_version": LLM_WS_VERSION,
+    });
     json!({"action": "start", "params": params})
 }
 
@@ -862,17 +916,61 @@ mod tests {
     }
 
     #[test]
-    fn start_frames_force_internal_llm_websocket_v2() {
+    fn connection_params_match_the_device_protocol() {
+        let opts = RequestOptions {
+            device_id: "ling-cli".to_owned(),
+            llm_app: None,
+        };
+        let params = connection_params(&opts);
+
+        assert_eq!(params["scene"], "main");
+        assert_eq!(params["mcp"], true);
+        assert_eq!(params["tool_protocol_version"], "v2");
+        assert_eq!(params["type"], "fullduplex");
+        assert_eq!(params["firmware_info"]["type"], "ling-cli");
+        assert_eq!(params["auth_id"], "ling-cli");
+        assert!(params.get("llm_app").is_none());
+    }
+
+    #[test]
+    fn explicit_app_id_is_added_as_a_debug_override() {
+        let opts = RequestOptions {
+            device_id: "ling-cli".to_owned(),
+            llm_app: Some("app-1".to_owned()),
+        };
+
+        assert_eq!(connection_params(&opts)["llm_app"], "app-1");
+    }
+
+    #[test]
+    fn start_frames_keep_device_properties_and_force_llm_websocket_v2() {
         for input in [
             RequestInput::Text("hello".to_owned()),
             RequestInput::Audio(vec![0, 1]),
         ] {
             let frame = start_frame(&input);
             assert_eq!(
+                frame.pointer("/params/nlu_properties/custom"),
+                Some(&json!({}))
+            );
+            assert_eq!(
                 frame.pointer("/params/nlu_properties/llm_ws_version"),
                 Some(&json!("2.0"))
             );
         }
+    }
+
+    #[test]
+    fn audio_chunks_are_paced_at_pcm_realtime() {
+        assert_eq!(
+            audio_chunk_duration(AUDIO_CHUNK_BYTES),
+            Duration::from_millis(80)
+        );
+    }
+
+    #[test]
+    fn text_payload_does_not_send_the_c_string_terminator() {
+        assert_eq!(text_payload("你好"), b"\xe4\xbd\xa0\xe5\xa5\xbd");
     }
 
     #[test]

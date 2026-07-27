@@ -358,10 +358,10 @@ struct RequestArgs {
     /// Send an audio file (raw PCM or 16k 16bit LE mono WAV).
     #[arg(long)]
     file: Option<PathBuf>,
-    /// Device id (auth_id) used for the interaction.
-    #[arg(long = "device-id", default_value = "ling-cli")]
-    device_id: String,
-    /// App id for multi-app products (llm_app).
+    /// Override the stable per-install device id used for this request.
+    #[arg(long = "device-id")]
+    device_id: Option<String>,
+    /// Override the app id (llm_app) for targeted debugging.
     #[arg(long = "llm-app")]
     llm_app: Option<String>,
     /// Show every protocol frame with timestamp and direction.
@@ -1354,8 +1354,13 @@ async fn request_command(cli: &Ctx, args: RequestArgs, selector: AppSelector) ->
         let file = args.file.expect("clap 保证 text/file 至少一个");
         RequestInput::Audio(ling_plugin_ai::load_pcm_audio(&file)?)
     };
+    let device_id = match args.device_id {
+        Some(device_id) if !device_id.trim().is_empty() => device_id,
+        Some(_) => anyhow::bail!("--device-id 不能为空"),
+        None => config::LingConfig::load_or_create_device_id()?,
+    };
     let opts = RequestOptions {
-        device_id: args.device_id,
+        device_id,
         llm_app: args.llm_app,
     };
 
@@ -1501,6 +1506,7 @@ async fn request_command(cli: &Ctx, args: RequestArgs, selector: AppSelector) ->
 
     let elapsed = started_at.elapsed();
     println!();
+    println!("- Device ID: {}", opts.device_id);
     if let Some(sid) = &sid {
         println!("- SID: {sid}");
     }
@@ -4017,7 +4023,7 @@ mod tests {
             Command::App(app) => match app.command {
                 AppCommand::Request(request) => {
                     assert_eq!(request.text.as_deref(), Some("你好"));
-                    assert_eq!(request.device_id, "ling-cli");
+                    assert!(request.device_id.is_none());
                     assert!(!request.verbose);
                     assert!(request.output_tts.is_none());
                 }
@@ -4034,6 +4040,29 @@ mod tests {
         match cli.command {
             Command::App(app) => match app.command {
                 AppCommand::Request(request) => assert!(request.verbose),
+                other => panic!("expected app request command, got {other:?}"),
+            },
+            other => panic!("expected app command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn app_request_accepts_an_explicit_device_id_override() {
+        let cli = Cli::try_parse_from([
+            "ling",
+            "app",
+            "request",
+            "--text",
+            "你好",
+            "--device-id",
+            "device-1",
+        ])
+        .expect("parse request device id");
+        match cli.command {
+            Command::App(app) => match app.command {
+                AppCommand::Request(request) => {
+                    assert_eq!(request.device_id.as_deref(), Some("device-1"));
+                }
                 other => panic!("expected app request command, got {other:?}"),
             },
             other => panic!("expected app command, got {other:?}"),
@@ -4327,6 +4356,7 @@ mod tests {
         guard.set_var("LING_CONFIG", &config_path);
         config::LingConfig {
             api_key: Some("saved-key".to_owned()),
+            ..Default::default()
         }
         .save()
         .expect("save config");
@@ -4348,6 +4378,7 @@ mod tests {
         guard.set_var("LING_CONFIG", &config_path);
         config::LingConfig {
             api_key: Some("Bearer saved-key".to_owned()),
+            ..Default::default()
         }
         .save()
         .expect("save config");

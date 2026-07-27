@@ -1,4 +1,5 @@
 pub mod config_view;
+mod device_mcp;
 pub mod management;
 pub mod records;
 pub mod request;

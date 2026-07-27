@@ -47,7 +47,7 @@ description: ListenAI（聆思）平台本地 CLI 工具，覆盖安装与账号
 
 ## 应用标识
 
-- 默认使用 Product ID，并自动转换为云端 Project ID。
+- 默认使用 Product ID。
 - 也可显式传 `--project-id` 或 `--app-id`；三种标识互斥。
 - 项目目录中的 `listenai.toml` 可提供默认 `product_id`。
 - `ling app list` 只展示已关联 Product ID、可由 CLI 管理的应用。
@@ -74,16 +74,20 @@ ling app --product-id <product_id> request \
 ```
 
 - 默认输出带时间、方向的双向事件摘要。
-- `--verbose` 逐行输出 WebSocket/SSE 协议帧，不做增长预览。
+- 只有需要逐事件排查时才使用 `--verbose`；分享输出前先脱敏。
 - `--output-tts <file>` 保存首个 TTS 音频。
-- 请求显式设置 `llm_ws_version=2.0`；`/v1/interaction` 是设备入口路径，
-  不代表内部 LLM 链路版本。
+- 默认使用 CLI 管理的 Device ID，实际值会显示在请求汇总或鉴权错误中。
+  只有用户明确指定设备身份时才传 `--device-id`；只有用户明确要求定向诊断
+  某个 App ID 时才传 `--llm-app`。
+- 如果设备鉴权返回 `20105`，从错误中读取本次 Device ID，先询问用户是否
+  授权将该 ID 导入当前应用。只有取得明确授权后，才执行
+  `ling app --product-id <product_id> device add <device_id>`；不要擅自开启或
+  关闭强制白名单。
 - 使用返回的 SID 执行 `ling app trace <sid>`，先阅读默认的人类可读时序概览。
 - 概览不足以定位问题、需要检查未被概览识别的新事件或每一步交互时，改用
   `ling app trace <sid> --verbose`。
-- 只有需要核对服务端原始字段、诊断解析歧义或保留机器可读证据时，才使用
+- 只有需要诊断解析歧义或保留机器可读证据时，才使用
   `ling app trace <sid> --json`。不要把未经脱敏的详细日志直接展示给用户。
-- 只有旧服务端不支持 SID 直查时才扫描请求记录。
 
 ## 真实设备绑定
 
@@ -106,8 +110,7 @@ ling app dev
 ling app deploy --version <version> --dry-run
 ```
 
-- `init` 写入 `listenai.toml` 和 SDK `.version`。
-- `build/dev/deploy` 检查 SDK 版本并在需要更新时请求确认。
+- `init` 将本地项目与目标应用关联。
 - 部署版本必须为 `X.Y.Z` 或 `vX.Y.Z`，同一 App 下不能重复且必须递增。
 - 正式上传前先用 `--dry-run` 检查目标应用和构建产物。
 
@@ -129,7 +132,7 @@ git clone https://cloud.listenai.com/CSKG836746/arcs-sdk/public/arcs_mini.git
 | 未找到 API Key / HTTP 401 | 让用户运行 `ling login`，再用 `ling account` 验证 |
 | 未指定应用 | 传入一种应用标识，或进入含 `listenai.toml` 的目录 |
 | 应用详情未返回产品密钥 | 让用户本人从应用详情获取并传给 `request` |
-| 设备授权失败 `20105` | 使用已导入白名单的设备 ID |
+| 设备授权失败 `20105` | 读取错误中的 Device ID，询问用户是否授权导入，明确同意后再执行 |
 | WAV 格式不符合要求 | 转为 16kHz、16bit LE、单声道 |
 | `trace` 未找到 SID | 核对 SID，并适当扩大 `--hours` |
 | 非交互环境需要 `--yes` | 只对未发布 OTA 删除追加，且先取得用户同意 |
