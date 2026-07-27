@@ -1,4 +1,5 @@
 name: Release
+# Human release runbook: RELEASING.md
 
 on:
   push:
@@ -7,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to release, for example v0.1.0"
+        description: "Existing tag to release, for example v0.2.0-beta.1"
         required: true
         type: string
 
@@ -24,8 +25,94 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  prepare:
+    name: Validate release
+    runs-on: ubuntu-22.04
+
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Validate tag and workspace versions
+        id: release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          tag="${RELEASE_TAG}"
+          version="${tag#v}"
+          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+
+          if [[ "${tag}" != v* || ! "${version}" =~ ${semver} ]]; then
+            echo "Release tag must be v-prefixed SemVer, got: ${tag}" >&2
+            exit 1
+          fi
+
+          prerelease=false
+          if [[ "${version}" == *-* ]]; then
+            prerelease=true
+          fi
+
+          export EXPECTED_VERSION="${version}"
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          expected = os.environ["EXPECTED_VERSION"]
+          metadata = json.loads(
+              subprocess.check_output(
+                  [
+                      "cargo",
+                      "metadata",
+                      "--locked",
+                      "--no-deps",
+                      "--format-version",
+                      "1",
+                  ],
+                  text=True,
+              )
+          )
+          members = set(metadata["workspace_members"])
+          packages = [
+              package
+              for package in metadata["packages"]
+              if package["id"] in members
+          ]
+          mismatches = [
+              (package["name"], package["version"])
+              for package in packages
+              if package["version"] != expected
+          ]
+          if mismatches:
+              print(
+                  f"All workspace packages must use release version {expected}:",
+                  file=sys.stderr,
+              )
+              for name, version in mismatches:
+                  print(f"- {name}: {version}", file=sys.stderr)
+              sys.exit(1)
+          PY
+
+          {
+            echo "tag=${tag}"
+            echo "version=${version}"
+            echo "prerelease=${prerelease}"
+          } >> "${GITHUB_OUTPUT}"
+
   build:
     name: Build ${{ matrix.target }}
+    needs: prepare
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -84,7 +171,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Install Rust target
         run: rustup target add ${{ matrix.target }}
@@ -116,10 +203,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          tag="${GITHUB_REF_NAME}"
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            tag="${{ inputs.tag }}"
-          fi
+          tag="${RELEASE_TAG}"
 
           package_dir="${BIN_NAME}-${tag}-${{ matrix.target }}"
           staging="dist/${package_dir}"
@@ -155,7 +239,8 @@ jobs:
           PY
         env:
           ARCHIVE: ${{ matrix.archive }}
-          PACKAGE_DIR: dist/${{ env.BIN_NAME }}-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}-${{ matrix.target }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          PACKAGE_DIR: dist/${{ env.BIN_NAME }}-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -167,7 +252,9 @@ jobs:
   release:
     name: Publish GitHub Release
     runs-on: ubuntu-22.04
-    needs: build
+    needs:
+      - prepare
+      - build
 
     steps:
       - name: Download artifacts
@@ -186,21 +273,33 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          IS_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
 
-          tag="${GITHUB_REF_NAME}"
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            tag="${{ inputs.tag }}"
-          fi
+          tag="${RELEASE_TAG}"
 
           if gh release view "${tag}" >/dev/null 2>&1; then
+            actual_prerelease="$(
+              gh release view "${tag}" --json isPrerelease \
+                --jq '.isPrerelease'
+            )"
+            if [[ "${actual_prerelease}" != "${IS_PRERELEASE}" ]]; then
+              echo "Existing release prerelease state does not match ${tag}" >&2
+              exit 1
+            fi
             gh release upload "${tag}" dist/* --clobber
           else
-            gh release create "${tag}" dist/* --verify-tag --generate-notes
+            release_flags=(--verify-tag --generate-notes)
+            if [[ "${IS_PRERELEASE}" == "true" ]]; then
+              release_flags+=(--prerelease --latest=false)
+            fi
+            gh release create "${tag}" dist/* "${release_flags[@]}"
           fi
 
       - name: Bump Homebrew tap
+        if: needs.prepare.outputs.prerelease == 'false'
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
