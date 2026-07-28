@@ -115,7 +115,7 @@ ling app dev
 部署：
 
 ```bash
-ling app deploy --product-id <product_id> --version <version>
+ling app deploy --product-id <product_id> --version <version> --activate
 ```
 
 可先 dry-run：

@@ -79,6 +79,9 @@ pub struct DeployArgs {
     /// Publisher identity.
     #[arg(long = "published-by")]
     pub published_by: Option<String>,
+    /// Activate the uploaded version on the app test chain after upload.
+    #[arg(long)]
+    pub activate: bool,
     /// Print what would be deployed without uploading.
     #[arg(long = "dry-run")]
     pub dry_run: bool,
@@ -95,6 +98,7 @@ struct DeployOptions {
     description: Option<String>,
     sdk_version: Option<String>,
     published_by: Option<String>,
+    activate: bool,
     dry_run: bool,
 }
 
@@ -220,7 +224,33 @@ pub async fn deploy_command(ctx: &AgentContext, args: DeployArgs) -> Result<Exit
     }
 
     let response = upload_agent_bundle(&opts, api_key, bundle).await?;
-    print_deploy_success(response.data.as_ref().unwrap_or(&DeployData::default()));
+    let data = response
+        .data
+        .as_ref()
+        .context("deploy response omitted data")?;
+    print_deploy_success(data);
+    if opts.activate {
+        if data.app_id.trim().is_empty() {
+            bail!(
+                "bundle uploaded as {}, but the response omitted appId so it could not be activated",
+                opts.version
+            );
+        }
+        let version = if data.version.trim().is_empty() {
+            opts.version.as_str()
+        } else {
+            data.version.as_str()
+        };
+        activate_framework_agent_version(&opts.endpoint, api_key, &data.app_id, version)
+            .await
+            .with_context(|| {
+                format!(
+                    "bundle uploaded as {}, but activating it on the test chain failed",
+                    opts.version
+                )
+            })?;
+        eprintln!("Activated {version} on the app test chain.");
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1016,6 +1046,7 @@ fn resolve_deploy_options(ctx: &AgentContext, args: DeployArgs) -> Result<Deploy
         description: clean_optional(args.description),
         sdk_version,
         published_by: clean_optional(args.published_by),
+        activate: args.activate,
         dry_run: args.dry_run,
     })
 }
@@ -1184,6 +1215,41 @@ async fn upload_agent_bundle(
     Ok(output)
 }
 
+async fn activate_framework_agent_version(
+    api_base_url: &str,
+    api_key: &str,
+    app_id: &str,
+    version: &str,
+) -> Result<()> {
+    let endpoint = format!("{}/", api_base_url.trim_end_matches('/'));
+    let mut url =
+        Url::parse(&endpoint).with_context(|| format!("invalid endpoint: {api_base_url}"))?;
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| anyhow!("invalid endpoint cannot be a base URL: {api_base_url}"))?;
+        segments.pop_if_empty();
+        segments.extend(["v1", "framework", "agents", app_id, "version"]);
+    }
+    let response = ling_core::client()?
+        .put(url.clone())
+        .bearer_auth(api_key.trim())
+        .json(&serde_json::json!({"version": version}))
+        .send()
+        .await
+        .with_context(|| format!("activate agent version through {url}"))?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!(
+            "activation failed: HTTP {} {}",
+            status.as_u16(),
+            body.trim()
+        );
+    }
+    Ok(())
+}
+
 fn print_deploy_dry_run(opts: &DeployOptions) -> Result<()> {
     let url = agent_deploy_url(opts)?;
     eprintln!("Dry run - skipping upload.");
@@ -1208,6 +1274,10 @@ fn print_deploy_metadata(opts: &DeployOptions) {
     if let Some(value) = &opts.published_by {
         eprintln!("Published by: {value}");
     }
+    eprintln!(
+        "Activate on app test chain: {}",
+        if opts.activate { "yes" } else { "no" }
+    );
 }
 
 fn print_deploy_success(data: &DeployData) {
@@ -1625,6 +1695,7 @@ mod tests {
             description: Some("支持基础语音对话".to_string()),
             sdk_version: Some("0.1.0".to_string()),
             published_by: Some("tester".to_string()),
+            activate: false,
             dry_run: true,
         };
 
@@ -1658,6 +1729,7 @@ mod tests {
                 description: None,
                 sdk_version: None,
                 published_by: None,
+                activate: true,
                 dry_run: true,
             },
         )
@@ -1667,6 +1739,7 @@ mod tests {
         assert_eq!(opts.version, "v0.2.0");
         assert_eq!(opts.version_name.as_deref(), Some("0.2.0 版本"));
         assert_eq!(opts.sdk_version.as_deref(), Some("0.1.0"));
+        assert!(opts.activate);
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -21,6 +21,8 @@ use std::time::Instant;
 const DOCS_BASE_URL: &str = "https://docs2.listenai.com";
 const PLATFORM_APP_CONFIG_URL: &str = "https://platform.listenai.com/appConfig";
 const PLATFORM_KB_URL: &str = "https://platform.listenai.com/datasets";
+const MAX_HOTWORD_CHARS: usize = 24;
+const MAX_HOTWORDS_TOTAL_CHARS: usize = 1024;
 
 #[derive(Debug, Parser)]
 #[command(name = "ling", version, about = "ListenAI local CLI")]
@@ -282,6 +284,8 @@ enum AppCommand {
     Dev,
     /// Preview or upload an agent bundle to the platform.
     Deploy(ling_plugin_app_project::DeployArgs),
+    /// Select the managed or a custom Agent version for the app test chain.
+    Chain(ChainArgs),
     /// Inspect an app. Product id defaults to listenai.toml.
     Inspect {
         /// Positional product id (same as --product-id).
@@ -605,6 +609,30 @@ struct LexiconArgs {
     command: LexiconCommand,
 }
 
+#[derive(Debug, Args)]
+struct ChainArgs {
+    #[command(subcommand)]
+    command: ChainCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ChainCommand {
+    /// Use the latest managed Agent version.
+    Managed {
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Use an uploaded custom Agent version.
+    Custom {
+        /// Uploaded version in vX.Y.Z format.
+        version: String,
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(Debug, Subcommand)]
 enum LexiconCommand {
     /// List domain lexicon entries.
@@ -629,8 +657,13 @@ enum LexiconCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Edit a lexicon entry.
-    Edit { word: String },
+    /// Edit a lexicon entry without changing its ID.
+    Edit {
+        hotword_id: String,
+        word: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Show the web page for deleting a lexicon entry.
     Delete { hotword_id: String },
 }
@@ -1200,6 +1233,7 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
             };
             return ling_plugin_app_project::deploy_command(&ctx, args).await;
         }
+        AppCommand::Chain(args) => chain_command(cli, args, selector).await?,
         AppCommand::Inspect {
             positional_product_id,
             json,
@@ -2227,6 +2261,50 @@ async fn replace_project_kb(
     )
 }
 
+async fn chain_command(cli: &Ctx, args: ChainArgs, selector: AppSelector) -> Result<()> {
+    let app = resolve_app(cli, selector).await?;
+    let detail = get_app_detail(cli, &app).await?;
+    let app_id = ling_plugin_app::project_app_id(config_view::project_data(&detail))
+        .context("应用详情缺少 App ID，无法切换测试链路版本")?;
+    let (version, json, message) = match args.command {
+        ChainCommand::Managed { json } => (
+            None,
+            json,
+            "测试链路已切换为 managed（官方最新版本）".to_owned(),
+        ),
+        ChainCommand::Custom { version, json } => {
+            let version = normalize_framework_agent_version(&version)?;
+            (
+                Some(version.clone()),
+                json,
+                format!("测试链路已切换为 custom（{version}）"),
+            )
+        }
+    };
+    let output = management::set_framework_agent_version(
+        &cli.api_base_url,
+        &app.api_key,
+        &app_id,
+        version.as_deref(),
+    )
+    .await?;
+    print_action_or_json(&output, json, &message)
+}
+
+fn normalize_framework_agent_version(value: &str) -> Result<String> {
+    let value = value.trim();
+    let raw = value.strip_prefix('v').unwrap_or(value);
+    let parts = raw.split('.').collect::<Vec<_>>();
+    if parts.len() != 3
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        anyhow::bail!("Agent 版本必须为 vX.Y.Z，例如 v0.0.8");
+    }
+    Ok(format!("v{raw}"))
+}
+
 async fn lexicon_command(cli: &Ctx, args: LexiconArgs, selector: AppSelector) -> Result<()> {
     let ResolvedApp {
         api_key,
@@ -2256,6 +2334,22 @@ async fn lexicon_command(cli: &Ctx, args: LexiconArgs, selector: AppSelector) ->
             }
         }
         LexiconCommand::Add { word, json } => {
+            let word = normalize_hotword(&word)?;
+            let current = management::list_all_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["hotwords"],
+            )
+            .await?;
+            if current
+                .iter()
+                .filter_map(hotword_word)
+                .any(|existing| existing == word)
+            {
+                anyhow::bail!("专业词汇已存在：{word}");
+            }
+            validate_hotwords_total(hotwords_total_chars(&current) + word.chars().count())?;
             let output = management::create_resource(
                 &cli.api_base_url,
                 &api_key,
@@ -2273,6 +2367,9 @@ async fn lexicon_command(cli: &Ctx, args: LexiconArgs, selector: AppSelector) ->
             if entries.is_empty() {
                 anyhow::bail!("专业词汇文件没有可导入的非空行：{}", file.display());
             }
+            for entry in &entries {
+                validate_hotword(&entry.word)?;
+            }
 
             let current = management::list_all_resource(
                 &cli.api_base_url,
@@ -2281,9 +2378,25 @@ async fn lexicon_command(cli: &Ctx, args: LexiconArgs, selector: AppSelector) ->
                 &["hotwords"],
             )
             .await?;
+            let existing_words = current
+                .iter()
+                .filter_map(hotword_word)
+                .collect::<HashSet<_>>();
+            let new_words = entries
+                .iter()
+                .map(|entry| entry.word.as_str())
+                .filter(|word| !existing_words.contains(word))
+                .collect::<HashSet<_>>();
+            validate_hotwords_total(
+                hotwords_total_chars(&current)
+                    + new_words
+                        .iter()
+                        .map(|word| word.chars().count())
+                        .sum::<usize>(),
+            )?;
             let mut existing = current
                 .iter()
-                .filter_map(|item| item.get("word").and_then(Value::as_str))
+                .filter_map(hotword_word)
                 .map(str::to_owned)
                 .collect::<HashSet<_>>();
             let mut seen = HashSet::new();
@@ -2372,10 +2485,45 @@ async fn lexicon_command(cli: &Ctx, args: LexiconArgs, selector: AppSelector) ->
             }
             Ok(())
         }
-        LexiconCommand::Edit { word } => Err(app_config_only_operation(
-            &format!("修改专业词汇 {word}"),
-            &project_id,
-        )),
+        LexiconCommand::Edit {
+            hotword_id,
+            word,
+            json,
+        } => {
+            let word = normalize_hotword(&word)?;
+            let current = management::list_all_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["hotwords"],
+            )
+            .await?;
+            let current_entry = current
+                .iter()
+                .find(|item| hotword_id_of(item) == Some(hotword_id.as_str()))
+                .with_context(|| format!("未找到专业词汇 ID：{hotword_id}"))?;
+            if current.iter().any(|item| {
+                hotword_id_of(item) != Some(hotword_id.as_str())
+                    && hotword_word(item) == Some(word.as_str())
+            }) {
+                anyhow::bail!("专业词汇已存在：{word}");
+            }
+            let old_chars = hotword_word(current_entry)
+                .map(|word| word.chars().count())
+                .unwrap_or_default();
+            validate_hotwords_total(
+                hotwords_total_chars(&current) - old_chars + word.chars().count(),
+            )?;
+            let output = management::update_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["hotwords", &hotword_id],
+                serde_json::json!({"word": word}),
+            )
+            .await?;
+            print_action_or_json(&output, json, "专业词汇修改成功")
+        }
         LexiconCommand::Delete { hotword_id } => Err(app_config_only_operation(
             &format!("删除专业词汇 {hotword_id}"),
             &project_id,
@@ -2401,6 +2549,52 @@ fn lexicon_import_entries(content: &str) -> Vec<LexiconImportEntry> {
             })
         })
         .collect()
+}
+
+fn normalize_hotword(value: &str) -> Result<String> {
+    let word = value.trim();
+    validate_hotword(word)?;
+    Ok(word.to_owned())
+}
+
+fn validate_hotword(word: &str) -> Result<()> {
+    if word.is_empty() {
+        anyhow::bail!("专业词汇不能为空");
+    }
+    let chars = word.chars().count();
+    if chars > MAX_HOTWORD_CHARS {
+        anyhow::bail!("单个专业词汇最多 {MAX_HOTWORD_CHARS} 个字符，当前为 {chars} 个字符：{word}");
+    }
+    Ok(())
+}
+
+fn validate_hotwords_total(chars: usize) -> Result<()> {
+    if chars > MAX_HOTWORDS_TOTAL_CHARS {
+        anyhow::bail!(
+            "所有专业词汇合计最多 {MAX_HOTWORDS_TOTAL_CHARS} 个字符，操作后将达到 {chars} 个字符"
+        );
+    }
+    Ok(())
+}
+
+fn hotword_word(item: &Value) -> Option<&str> {
+    item.get("word")
+        .or_else(|| item.get("name"))
+        .and_then(Value::as_str)
+}
+
+fn hotword_id_of(item: &Value) -> Option<&str> {
+    item.get("id")
+        .or_else(|| item.get("hotword_id"))
+        .and_then(Value::as_str)
+}
+
+fn hotwords_total_chars(items: &[Value]) -> usize {
+    items
+        .iter()
+        .filter_map(hotword_word)
+        .map(|word| word.chars().count())
+        .sum()
 }
 
 async fn tone_command(cli: &Ctx, args: ToneArgs, selector: AppSelector) -> Result<()> {
@@ -3585,6 +3779,71 @@ mod tests {
     }
 
     #[test]
+    fn parses_chain_modes_and_deploy_activation() {
+        let managed = Cli::try_parse_from([
+            "ling",
+            "app",
+            "--product-id",
+            "product-123",
+            "chain",
+            "managed",
+        ])
+        .expect("parse managed chain");
+        assert!(matches!(
+            managed.command,
+            Command::App(AppArgs {
+                command: AppCommand::Chain(ChainArgs {
+                    command: ChainCommand::Managed { json: false }
+                }),
+                ..
+            })
+        ));
+
+        let custom = Cli::try_parse_from([
+            "ling", "app", "--app-id", "app-123", "chain", "custom", "v0.0.8", "--json",
+        ])
+        .expect("parse custom chain");
+        match custom.command {
+            Command::App(AppArgs {
+                command:
+                    AppCommand::Chain(ChainArgs {
+                        command: ChainCommand::Custom { version, json },
+                    }),
+                ..
+            }) => {
+                assert_eq!(version, "v0.0.8");
+                assert!(json);
+            }
+            other => panic!("expected custom chain command, got {other:?}"),
+        }
+
+        let deploy =
+            Cli::try_parse_from(["ling", "app", "deploy", "--version", "v0.0.8", "--activate"])
+                .expect("parse deploy activation");
+        match deploy.command {
+            Command::App(AppArgs {
+                command: AppCommand::Deploy(args),
+                ..
+            }) => assert!(args.activate),
+            other => panic!("expected deploy command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn normalizes_framework_agent_versions() {
+        assert_eq!(
+            normalize_framework_agent_version("0.0.8").unwrap(),
+            "v0.0.8"
+        );
+        assert_eq!(
+            normalize_framework_agent_version("v12.3.45").unwrap(),
+            "v12.3.45"
+        );
+        assert!(normalize_framework_agent_version("v1.2").is_err());
+        assert!(normalize_framework_agent_version("v1.2.3-beta").is_err());
+    }
+
+    #[test]
     fn parses_role_show_and_lexicon_import() {
         let role = Cli::try_parse_from(["ling", "app", "role", "show", "role-1", "--json"])
             .expect("parse role show");
@@ -3637,6 +3896,22 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn validates_hotword_character_limits() {
+        assert_eq!(normalize_hotword("  小聆  ").unwrap(), "小聆");
+        assert!(validate_hotword(&"词".repeat(MAX_HOTWORD_CHARS)).is_ok());
+        assert!(validate_hotword(&"词".repeat(MAX_HOTWORD_CHARS + 1)).is_err());
+        assert!(validate_hotwords_total(MAX_HOTWORDS_TOTAL_CHARS).is_ok());
+        assert!(validate_hotwords_total(MAX_HOTWORDS_TOTAL_CHARS + 1).is_err());
+
+        let items = vec![
+            serde_json::json!({"id": "one", "word": "小聆"}),
+            serde_json::json!({"hotword_id": "two", "word": "ListenAI"}),
+        ];
+        assert_eq!(hotwords_total_chars(&items), 10);
+        assert_eq!(hotword_id_of(&items[1]), Some("two"));
     }
 
     #[test]

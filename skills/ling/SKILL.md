@@ -108,11 +108,14 @@ cd <agent_name>
 ling app build
 ling app dev
 ling app deploy --version <version> --dry-run
+ling app deploy --version <version> --activate
 ```
 
 - `init` 将本地项目与目标应用关联。
 - 部署版本必须为 `X.Y.Z` 或 `vX.Y.Z`，同一 App 下不能重复且必须递增。
 - 正式上传前先用 `--dry-run` 检查目标应用和构建产物。
+- 只有用户要求上传后立即用于应用测试时才加 `--activate`。切换已上传版本用
+  `ling app chain custom <version>`，恢复托管版本用 `ling app chain managed`。
 
 ## 端侧固件
 

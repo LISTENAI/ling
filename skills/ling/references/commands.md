@@ -124,7 +124,7 @@ ling app kb unlink <index_id>
 ling app lexicon list
 ling app lexicon add <word>
 ling app lexicon import words.txt
-ling app lexicon edit <word>
+ling app lexicon edit <hotword_id> <word>
 ling app lexicon delete <hotword_id>
 
 ling app tone show
@@ -206,7 +206,9 @@ ling app build --release
 ling app dev
 ling app deploy --version v1.0.0 --dry-run
 ling app deploy --product-id <product_id> \
-  --version v1.0.0 --version-name 首次发布
+  --version v1.0.0 --version-name 首次发布 --activate
+ling app chain custom v1.0.0
+ling app chain managed
 ```
 
 ## 知识库

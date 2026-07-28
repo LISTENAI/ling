@@ -53,6 +53,8 @@
   16 kHz, 16-bit little-endian mono PCM at real-time playback speed.
 - Reuse a random, per-install CLI Device ID unless the user supplies a
   one-request override.
+- Redact credentials from default human-readable interaction output. Keep
+  protocol frames intact only in explicitly requested verbose diagnostics.
 - Treat device tool names, descriptions, and input schemas as compatibility
   contracts. Do not change them without an authoritative device definition.
   Respond to `initialize`, `tools/list`, and `tools/call`, and ignore lifecycle

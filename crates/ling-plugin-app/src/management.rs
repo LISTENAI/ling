@@ -64,6 +64,22 @@ pub async fn get_project(api_base_url: &str, api_key: &str, project_id: &str) ->
     .await
 }
 
+pub async fn set_framework_agent_version(
+    api_base_url: &str,
+    api_key: &str,
+    app_id: &str,
+    version: Option<&str>,
+) -> Result<Value> {
+    request(
+        api_base_url,
+        api_key,
+        Method::PUT,
+        &["v1", "framework", "agents", app_id, "version"],
+        Some(json!({"version": version.unwrap_or_default()})),
+    )
+    .await
+}
+
 pub async fn list_resource(
     api_base_url: &str,
     api_key: &str,

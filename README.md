@@ -107,7 +107,15 @@ ling app dev
 
 ```bash
 ling app deploy --version v1.0.0 --dry-run
-ling app deploy --version v1.0.0
+ling app deploy --version v1.0.0 --activate
+```
+
+`--activate` 会在上传成功后将该版本用于应用的测试链路。也可以在已上传版本间
+切换，或恢复官方托管版本：
+
+```bash
+ling app chain custom v1.0.0
+ling app chain managed
 ```
 
 ### 端云调试

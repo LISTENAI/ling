@@ -386,15 +386,55 @@ fn render_mcp(value: &Value) -> String {
             None => method.to_owned(),
         };
         return match params {
-            Some(params) if !params.is_null() => format!("MCP 调用：{label} {}", compact(params)),
+            Some(params) if !params.is_null() => {
+                format!("MCP 调用：{label} {}", compact_safe(params))
+            }
             _ => format!("MCP 调用：{label}"),
         };
     }
 
     let method = string_at(value, &["/method"]).unwrap_or("unknown");
     match value.get("result") {
-        Some(result) => format!("MCP 结果：{method} {}", compact(result)),
+        Some(result) => format!("MCP 结果：{method} {}", compact_safe(result)),
         None => format!("MCP 事件：{method}"),
+    }
+}
+
+fn compact_safe(value: &Value) -> String {
+    compact(&redact_credentials(value))
+}
+
+fn redact_credentials(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| {
+                    let normalized = key
+                        .chars()
+                        .filter(|character| character.is_ascii_alphanumeric())
+                        .flat_map(char::to_lowercase)
+                        .collect::<String>();
+                    let value = if matches!(
+                        normalized.as_str(),
+                        "token"
+                            | "accesstoken"
+                            | "refreshtoken"
+                            | "apikey"
+                            | "authorization"
+                            | "secret"
+                            | "productsecret"
+                    ) {
+                        Value::String("[REDACTED]".to_owned())
+                    } else {
+                        redact_credentials(value)
+                    };
+                    (key.clone(), value)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(redact_credentials).collect()),
+        _ => value.clone(),
     }
 }
 
@@ -1077,6 +1117,34 @@ mod tests {
             ),
             r#"[16:42:04.500] ↑ MCP 结果：tools/call {"content":[{"text":"ok","type":"text"}],"isError":false}"#
         );
+    }
+
+    #[test]
+    fn human_mcp_output_redacts_credentials_but_verbose_keeps_raw_frames() {
+        let body = json!({
+            "action": "mcp",
+            "data": {
+                "method": "initialize",
+                "params": {
+                    "capabilities": {
+                        "vision": {
+                            "token": "short-lived-jwt",
+                            "url": "https://example.com/vision"
+                        }
+                    }
+                }
+            }
+        })
+        .to_string();
+        let event = RequestEvent::Frame {
+            direction: RequestDirection::Downstream,
+            body: body.clone(),
+        };
+
+        let human = render_frame_at(&RequestDirection::Downstream, &body, "16:42:04.750");
+        assert!(human.contains(r#""token":"[REDACTED]""#));
+        assert!(!human.contains("short-lived-jwt"));
+        assert!(render_verbose_event(&event).contains("short-lived-jwt"));
     }
 
     #[test]
