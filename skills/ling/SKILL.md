@@ -93,6 +93,8 @@ ling app --product-id <product_id> request --text 你好
   切换，不要代用户去开关。
 - 使用返回的 SID 执行 `ling app trace <sid>`，先查看默认时序概览。
   `trace` 按 SID 全局查询，不要给它传应用标识。
+- 默认概览包含 warn 和 error；排查自定义 Agent 自己打的 info/debug 日志
+  时使用 `--verbose`。
 - 概览不足、需要查看未识别事件或逐步交互时使用 `--verbose`。
 - 只有诊断解析歧义或保存机器可读证据时才使用 `--json`。
 
@@ -127,7 +129,7 @@ ling app deploy --version <version> --activate
 | 未指定应用 | 使用显式标识、`listenai.toml` 或 `app list` |
 | 设备授权失败 `20105` | 询问用户是否授权导入错误中显示的 Device ID |
 | WAV 格式不符合要求 | 转为 16kHz、16bit LE、单声道 |
-| `trace` 未找到 SID | 核对 SID，并适当扩大 `--hours` |
+| `trace` 未找到 SID | 核对 SID；日志有保留期，过期后无法回查 |
 | 未发布 OTA 删除需要 `--yes` | 先确认用户确实要求删除，再追加参数 |
 
 ## 公开内容

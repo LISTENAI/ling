@@ -183,7 +183,6 @@ ling app --product-id <product_id> request \
 ling app trace <sid>
 ling app trace <sid> --verbose
 ling app trace <sid> --json
-ling app trace <sid> --hours 2
 ```
 
 `request` 自行完成应用鉴权，不需要额外凭据参数。它不提供 `--json`：默认
@@ -196,9 +195,13 @@ ling app trace <sid> --hours 2
 在默认输出里就是完整的。
 
 `trace` 按 SID 全局查询，自己解析出所属应用，因此不接受 `--product-id`、
-`--project-id` 或 `--app-id`。默认提炼关键时序事件；概览不足时使用
-`--verbose`，需要保存机器可读记录时使用 `--json`。详细输出可能包含完整
-请求上下文和工具结果。
+`--project-id` 或 `--app-id`，也没有时间窗参数。默认提炼关键时序事件，并
+始终显示 warn 和 error 级别的日志；info 和 debug 只在 `--verbose` 里出现。
+需要保存机器可读记录时使用 `--json`。详细输出可能包含完整请求上下文和
+工具结果。
+
+自定义 Agent 用 SDK 的 `log.info` / `log.debug` 打的日志默认不显示，排查
+自己的 Agent 时用 `--verbose`。`log.warn` 和 `log.error` 默认可见。
 
 ## 自定义 Agent 项目
 

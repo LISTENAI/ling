@@ -1,13 +1,11 @@
-//! 请求记录查询（POST /v1/requests）与按 SID 追查。
+//! 按 SID 查询 Agent 执行日志并渲染时序概览。
 
 use anyhow::{bail, Context, Result};
-use chrono::{DateTime, Duration, Local, SecondsFormat, TimeZone, Utc};
+use chrono::{DateTime, Local};
 
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::time::Duration as StdDuration;
 
-const PAGE_LIMIT: u32 = 50;
-const MAX_PAGES: u32 = 20;
 const REQUEST_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 
 /// 按 SID 直接查询 Agent 执行日志。旧服务端没有该路由时返回 None。
@@ -35,36 +33,6 @@ pub async fn query_agent_logs(
     }
     let value = serde_json::from_str(&body).context("Agent 日志响应不是合法 JSON")?;
     Ok(Some(value))
-}
-
-/// 查询一页请求记录。start/end 为 RFC3339 UTC 字符串。
-pub async fn query_requests(
-    api_base_url: &str,
-    api_key: &str,
-    start: &str,
-    end: &str,
-    page: u32,
-    limit: u32,
-) -> Result<Value> {
-    let url = ling_core::http_url(api_base_url, "/v1/requests")?;
-    let response = ling_core::client_with_timeout(REQUEST_TIMEOUT)?
-        .post(url)
-        .header("authorization", ling_core::bearer(api_key))
-        .json(&json!({
-            "timeFilter": {"start": start, "end": end},
-            "page": page,
-            "limit": limit,
-        }))
-        .send()
-        .await
-        .context("查询请求记录失败")?;
-
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        bail!("查询请求记录失败：HTTP {status} {body}");
-    }
-    serde_json::from_str(&body).context("请求记录响应不是合法 JSON")
 }
 
 /// Render the structured Agent log stream as a concise timeline. Verbose mode
@@ -298,10 +266,11 @@ fn agent_timeline_line(log: &ParsedAgentLog<'_>, model_call_count: &mut u64) -> 
         _ if message.contains("nlp text stream initialized") => {
             format!("↓ 文本 URL：{}", message_url(message).unwrap_or("(未记录)"))
         }
-        _ if string_field(payload, "level") == Some("error") => {
-            format!("错误：{}", normalize_line(message))
-        }
-        _ => return None,
+        _ => match string_field(payload, "level") {
+            Some("error") => format!("错误：{}", normalize_line(message)),
+            Some("warn") => format!("告警：{}", normalize_line(message)),
+            _ => return None,
+        },
     };
 
     Some(format!("[{time}] {summary}"))
@@ -405,430 +374,42 @@ fn compact(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
 }
 
-#[derive(Debug)]
-pub struct TraceOutcome {
-    /// SID 是请求的唯一标识：要么未命中，要么恰好一条。
-    pub record: Option<Value>,
-    /// 扫描是否因翻页上限而截断
-    pub truncated: bool,
-}
-
-/// 在最近 hours 小时的记录中按 SID 检索（匹配 response_body.id / request_id /
-/// response_id，均为唯一键），命中即停止翻页。
-pub async fn find_by_sid(
-    api_base_url: &str,
-    api_key: &str,
-    sid: &str,
-    hours: u32,
-) -> Result<TraceOutcome> {
-    let end = Utc::now();
-    let start = end - Duration::hours(hours as i64);
-    let start = start.to_rfc3339_opts(SecondsFormat::Millis, true);
-    let end = end.to_rfc3339_opts(SecondsFormat::Millis, true);
-
-    let mut truncated = false;
-    for page in 1..=MAX_PAGES {
-        let output = query_requests(api_base_url, api_key, &start, &end, page, PAGE_LIMIT).await?;
-        let data = output
-            .get("data")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let page_len = data.len();
-        if let Some(record) = data
-            .into_iter()
-            .find(|record| record_matches_sid(record, sid))
-        {
-            return Ok(TraceOutcome {
-                record: Some(record),
-                truncated: false,
-            });
-        }
-        if page_len < PAGE_LIMIT as usize {
-            break;
-        }
-        if page == MAX_PAGES {
-            truncated = true;
-        }
-    }
-    Ok(TraceOutcome {
-        record: None,
-        truncated,
-    })
-}
-
-/// 未命中时的提示文案。
-pub fn miss_message(sid: &str, hours: u32, truncated: bool) -> String {
-    let mut output =
-        format!("最近 {hours} 小时内未找到 SID 为 {sid} 的请求记录（SID 有误或已过期）。");
-    if truncated {
-        output.push_str("\n注意：该时间窗内记录较多，扫描被截断；可用 --hours 缩小范围。");
-    }
-    output.push_str("\n提示：可用 --hours 调整检索时间窗（默认 168，即 7 天）。");
-    output
-}
-
-fn record_matches_sid(record: &Value, sid: &str) -> bool {
-    let id_matches = |value: Option<&Value>| {
-        value
-            .map(|value| match value {
-                Value::String(text) => text == sid,
-                Value::Number(number) => number.to_string() == sid,
-                _ => false,
-            })
-            .unwrap_or(false)
-    };
-    id_matches(record.pointer("/response_body/id"))
-        || id_matches(record.get("request_id"))
-        || id_matches(record.get("response_id"))
-}
-
-pub fn render_record(record: &Value, requested_sid: &str, verbose: bool) -> String {
-    let mut timeline = Vec::new();
-    let start_time = text_at(record, "/request_created_at")
-        .and_then(local_hms_from_rfc3339)
-        .unwrap_or_else(|| "--:--:--.---".to_owned());
-    timeline.push(format!("[{start_time}] 请求开始"));
-
-    if let Some(text) = request_text(record) {
-        timeline.push(format!("[{start_time}] ↑ 用户：{}", normalize_line(&text)));
-    }
-
-    let mut last_reply = None;
-    for node in link_nodes(record) {
-        let time = node
-            .started_at
-            .and_then(local_hms_from_unix)
-            .unwrap_or_else(|| "--:--:--.---".to_owned());
-        if let Some(tool_input) = &node.tool_input {
-            timeline.push(format!(
-                "[{time}] 工具调用：{} {}",
-                node.tag,
-                clip(tool_input, false)
-            ));
-        }
-        for result in &node.tool_results {
-            timeline.push(format!(
-                "[{time}] 工具结果：{} {}",
-                node.tag,
-                clip(&summarize_tool_result(result), false)
-            ));
-        }
-        if !node.content.is_empty() {
-            last_reply = Some(node.content);
-        }
-    }
-
-    let response = response_text(record).or(last_reply);
-    if let Some(response) = response {
-        let time = text_at(record, "/response_created_at")
-            .and_then(local_hms_from_rfc3339)
-            .unwrap_or_else(|| "--:--:--.---".to_owned());
-        timeline.push(format!("[{time}] ↓ 回复：{}", normalize_line(&response)));
-    }
-
-    if let Some(time) = text_at(record, "/response_created_at").and_then(local_hms_from_rfc3339) {
-        let duration = record
-            .get("delay_ms")
-            .and_then(Value::as_u64)
-            .map(|ms| format!("，耗时 {}", render_duration(ms)))
-            .unwrap_or_default();
-        timeline.push(format!("[{time}] 请求结束{duration}"));
-    }
-
-    let mut output = timeline.join("\n");
-    let mut summary = vec![format!("- SID：{requested_sid}")];
-    if let Some(path) = text_at(record, "/request_path") {
-        summary.push(format!("- 路径：{path}"));
-    }
-    if let Some(model) = text_at(record, "/response_body/model") {
-        summary.push(format!("- 模型：{model}"));
-    }
-    if let Some(tokens) = token_summary(record) {
-        summary.push(format!("- Token：{tokens}"));
-    }
-    if let Some(ms) = record.get("delay_ms").and_then(Value::as_u64) {
-        summary.push(format!("- 耗时：{}", render_duration(ms)));
-    }
-    output.push_str("\n\n");
-    output.push_str(&summary.join("\n"));
-
-    if verbose {
-        output.push_str("\n\n详细步骤：");
-        if let Some(body) = record.get("request_body") {
-            output.push_str(&format!(
-                "\n[{start_time}] client → llm request {}",
-                compact(body)
-            ));
-        }
-        if let Some(frames) = record
-            .pointer("/response_body/streamed_data")
-            .and_then(Value::as_array)
-        {
-            for frame in frames {
-                let time = frame
-                    .get("created")
-                    .and_then(Value::as_i64)
-                    .and_then(local_hms_from_unix)
-                    .unwrap_or_else(|| "--:--:--.---".to_owned());
-                output.push_str(&format!("\n[{time}] llm → client frame {}", compact(frame)));
-            }
-        }
-    } else {
-        output.push_str("\n\n使用 --verbose 查看全部步骤，--json 输出服务端原始记录。");
-    }
-    output
-}
-
-/// RFC3339 时间转本地时区 "HH:MM:SS.mmm"。
-fn local_hms_from_rfc3339(text: String) -> Option<String> {
-    let parsed = DateTime::parse_from_rfc3339(&text).ok()?;
-    Some(
-        parsed
-            .with_timezone(&Local)
-            .format("%H:%M:%S%.3f")
-            .to_string(),
-    )
-}
-
-/// Unix 秒转本地时区 "HH:MM:SS"（streamed_data 帧只有秒级精度）。
-fn local_hms_from_unix(secs: i64) -> Option<String> {
-    Some(
-        Local
-            .timestamp_opt(secs, 0)
-            .single()?
-            .format("%H:%M:%S")
-            .to_string(),
-    )
-}
-
-/// 链路节点：从 streamed_data 按 (tag, index) 聚合的一次技能/工具/回复片段。
-#[derive(Debug)]
-struct LinkNode {
-    tag: String,
-    tool_input: Option<String>,
-    tool_results: Vec<Value>,
-    content: String,
-    /// 节点首帧的 Unix 秒时间戳
-    started_at: Option<i64>,
-}
-
-fn link_nodes(record: &Value) -> Vec<LinkNode> {
-    let Some(frames) = record
-        .pointer("/response_body/streamed_data")
-        .and_then(Value::as_array)
-    else {
-        return Vec::new();
-    };
-
-    let mut nodes: Vec<(String, LinkNode)> = Vec::new();
-    for frame in frames {
-        let Some(delta) = frame.pointer("/choices/0/delta") else {
-            continue;
-        };
-        let tag = delta
-            .get("tag")
-            .and_then(Value::as_str)
-            .filter(|tag| !tag.is_empty())
-            // 无 tag 的片段是普通模型回复
-            .unwrap_or("回复")
-            .to_owned();
-        let key = delta
-            .get("index")
-            .and_then(Value::as_str)
-            .filter(|index| !index.is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(|| tag.clone());
-
-        if nodes.last().map(|(last_key, _)| last_key != &key) != Some(false) {
-            nodes.push((
-                key,
-                LinkNode {
-                    tag,
-                    tool_input: None,
-                    tool_results: Vec::new(),
-                    content: String::new(),
-                    started_at: frame.get("created").and_then(Value::as_i64),
-                },
-            ));
-        }
-        let node = &mut nodes.last_mut().expect("just pushed").1;
-
-        if node.tool_input.is_none() {
-            node.tool_input = delta
-                .get("tool_input")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|input| !input.is_empty())
-                .map(str::to_owned);
-        }
-        if let Some(result) = delta.get("tool_result") {
-            if !result.is_null() {
-                node.tool_results.push(result.clone());
-            }
-        }
-        if let Some(content) = delta.get("content").and_then(Value::as_str) {
-            node.content.push_str(content);
-        }
-    }
-    nodes.into_iter().map(|(_, node)| node).collect()
-}
-
-/// 工具结果摘要：优先意图答案文本，其次服务名/子类型，兜底截断 JSON。
-fn summarize_tool_result(result: &Value) -> String {
-    for pointer in ["/intent/answer/text", "/intent/service", "/sub"] {
-        if let Some(text) = result
-            .pointer(pointer)
-            .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
-        {
-            return text.to_owned();
-        }
-    }
-    result.to_string()
-}
-
-fn token_summary(record: &Value) -> Option<String> {
-    let usage = record.pointer("/response_body/usage")?;
-    let total = usage.get("total_tokens").and_then(Value::as_i64)?;
-    match (
-        usage.get("prompt_tokens").and_then(Value::as_i64),
-        usage.get("completion_tokens").and_then(Value::as_i64),
-    ) {
-        (Some(prompt), Some(completion)) => Some(format!(
-            "{total}（prompt {prompt} + completion {completion}）"
-        )),
-        _ => Some(total.to_string()),
-    }
-}
-
-/// 默认视图可截断长文本，需要完整内容的调用方可以显式关闭截断。
-fn clip(text: &str, unabridged: bool) -> String {
-    const LIMIT: usize = 160;
-    let text = text.trim();
-    if unabridged || text.chars().count() <= LIMIT {
-        return text.to_owned();
-    }
-    let clipped: String = text.chars().take(LIMIT).collect();
-    format!("{clipped}…")
-}
-
-/// 提取请求文本：优先 request_body.messages 中最后一条 user 消息（多轮上下文时
-/// request_prompt 是历史首条，会产生误导），其次 request_prompt。
-fn request_text(record: &Value) -> Option<String> {
-    record
-        .pointer("/request_body/messages")
-        .and_then(Value::as_array)
-        .and_then(|messages| {
-            messages
-                .iter()
-                .rev()
-                .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
-        })
-        .and_then(|message| message.get("content").and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(str::to_owned)
-        .or_else(|| text_at(record, "/request_prompt"))
-}
-
-fn text_at(record: &Value, pointer: &str) -> Option<String> {
-    record
-        .pointer(pointer)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(str::to_owned)
-}
-
-/// 提取响应文本：优先 choices[0].message.content，其次 response_prompt。
-fn response_text(record: &Value) -> Option<String> {
-    record
-        .pointer("/response_body/choices/0/message/content")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            let raw = text_at(record, "/response_prompt")?;
-            // response_prompt 可能是 JSON 字符串，尝试取其中的 content
-            match serde_json::from_str::<Value>(&raw) {
-                Ok(value) => value
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    .or(Some(raw)),
-                Err(_) => Some(raw),
-            }
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
-    fn sample_record() -> Value {
+    fn log_entry(level: &str, message: &str) -> Value {
         json!({
-            "request_id": "99e2e08c-fff6-4bc5-9cc8-c39edb4b52c4",
-            "response_id": 192977817,
-            "request_created_at": "2026-07-05T03:28:23.349Z",
-            "response_created_at": "2026-07-05T03:28:25.317Z",
-            "request_path": "/v1/chat/completions",
-            "request_prompt": "现在几点",
-            "request_body": {
-                "messages": [
-                    {"role": "user", "content": "现在几点"},
-                    {"role": "assistant", "content": "现在是11点。"},
-                    {"role": "user", "content": "你好"}
-                ]
-            },
-            "delay_ms": 1968,
-            "user_api_key_preview": "b71ca...0d8",
-            "response_body": {
-                "id": "746c7ab660b341dbb27937c77f8223c7",
-                "model": "ls-interaction-v1",
-                "usage": {"total_tokens": 1980, "prompt_tokens": 1940, "completion_tokens": 40},
-                "choices": [{"message": {"role": "assistant", "content": "现在是11点28分。"}}],
-                "streamed_data": [
-                    {"created": 1783222105, "choices": [{"delta": {
-                        "tag": "aiui_datetimePro", "index": "node-1", "type": "start",
-                        "content": "", "tool_input": "查询当前时间。"
-                    }}]},
-                    {"choices": [{"delta": {
-                        "tag": "aiui_datetimePro", "index": "node-1", "type": "delta",
-                        "content": "",
-                        "tool_result": {"sub": "nlp", "intent": {"service": "datetime",
-                            "answer": {"text": "当前是11点28分。"}}}
-                    }}]},
-                    {"choices": [{"delta": {
-                        "tag": "reply_text", "index": "node-2", "type": "delta",
-                        "content": "现在是"
-                    }}]},
-                    {"choices": [{"delta": {
-                        "tag": "reply_text", "index": "node-2", "type": "delta",
-                        "content": "11点28分。"
-                    }}]}
-                ]
-            }
+            "timestamp": "2026-07-26T08:37:21.772Z",
+            "content": json!({
+                "level": level,
+                "origin": "agent",
+                "message": message,
+                "sid": "sid-1",
+                "time": "2026-07-26T08:37:21Z",
+            })
+            .to_string(),
         })
     }
 
     #[test]
-    fn matches_interaction_sid_via_response_body_id() {
-        assert!(record_matches_sid(
-            &sample_record(),
-            "746c7ab660b341dbb27937c77f8223c7"
-        ));
-        assert!(!record_matches_sid(&sample_record(), "deadbeef"));
-    }
+    fn default_timeline_keeps_warn_and_error_but_drops_info_and_debug() {
+        let output = json!({
+            "data": [
+                log_entry("debug", "内部细节"),
+                log_entry("info", "常规进展"),
+                log_entry("warn", "xiaoling interaction failed before any delta"),
+                log_entry("error", "bundle 执行失败"),
+            ]
+        });
 
-    #[test]
-    fn matches_request_and_response_ids() {
-        assert!(record_matches_sid(
-            &sample_record(),
-            "99e2e08c-fff6-4bc5-9cc8-c39edb4b52c4"
-        ));
-        assert!(record_matches_sid(&sample_record(), "192977817"));
+        let rendered = render_agent_trace(&output, "sid-1", false).expect("render trace");
+
+        assert!(rendered.contains("告警：xiaoling interaction failed before any delta"));
+        assert!(rendered.contains("错误：bundle 执行失败"));
+        assert!(!rendered.contains("内部细节"));
+        assert!(!rendered.contains("常规进展"));
     }
 
     #[test]
@@ -940,51 +521,5 @@ mod tests {
         assert!(verbose.contains("agent info tool.started {\""));
         assert!(verbose.contains("\"toolArguments\":{\"date\":\"今天\",\"location\":\"台北\"}"));
         assert!(!verbose.contains("使用 --verbose"));
-    }
-
-    #[test]
-    fn renders_hit_summary_with_link_nodes() {
-        let out = render_record(&sample_record(), "746c7ab660b341dbb27937c77f8223c7", false);
-        assert!(out.contains("ls-interaction-v1"));
-        assert!(out.contains("你好"));
-        assert!(out.contains("1980（prompt 1940 + completion 40）"));
-        assert!(out.contains("请求开始"));
-        assert!(out.contains("↑ 用户：你好"));
-        assert!(out.contains("工具调用：aiui_datetimePro 查询当前时间。"));
-        assert!(out.contains("工具结果：aiui_datetimePro 当前是11点28分。"));
-        assert!(out.contains("↓ 回复：现在是11点28分。"));
-        assert!(out.contains("请求结束，耗时 1.97 s"));
-        assert!(!out.contains("详细步骤："));
-        assert!(out.contains("--verbose"));
-    }
-
-    #[test]
-    fn verbose_mode_shows_each_raw_record_frame_on_one_line() {
-        let out = render_record(&sample_record(), "746c7ab660b341dbb27937c77f8223c7", true);
-        assert!(out.contains("详细步骤："));
-        assert!(out.contains("client → llm request"));
-        assert!(out.contains("llm → client frame"));
-        assert!(out
-            .lines()
-            .filter(|line| line.contains("llm → client frame"))
-            .all(|line| !line.contains('\n')));
-    }
-
-    #[test]
-    fn miss_message_hints_expiry_and_window() {
-        let out = miss_message("abc", 24, false);
-        assert!(out.contains("未找到"));
-        assert!(out.contains("有误或已过期"));
-        assert!(out.contains("--hours"));
-
-        let truncated = miss_message("abc", 24, true);
-        assert!(truncated.contains("截断"));
-    }
-
-    #[test]
-    fn clip_truncates_only_in_default_mode() {
-        let long = "很".repeat(300);
-        assert!(clip(&long, false).chars().count() <= 161);
-        assert_eq!(clip(&long, true), long);
     }
 }

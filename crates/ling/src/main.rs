@@ -307,17 +307,14 @@ enum AppCommand {
     Delete,
     /// Send a simulated request and show a bidirectional event timeline.
     Request(RequestArgs),
-    /// Look up an existing request record by SID.
+    /// Look up the Agent execution log by SID.
     Trace {
         /// SID printed by `ling app request` or found in link frames.
         sid: String,
-        /// How many hours back to search (default 168 / seven days).
-        #[arg(long, default_value_t = 168)]
-        hours: u32,
-        /// Show every Agent or request-record step as one compact line.
+        /// Show every Agent log entry as one compact line.
         #[arg(long, visible_alias = "full")]
         verbose: bool,
-        /// Print the raw matching records as JSON.
+        /// Print the raw Agent log response as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -1281,14 +1278,9 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
             return Err(app_config_only_operation("删除应用", &app.project_id));
         }
         AppCommand::Request(args) => request_command(cli, args, selector).await?,
-        AppCommand::Trace {
-            sid,
-            hours,
-            verbose,
-            json,
-        } => {
+        AppCommand::Trace { sid, verbose, json } => {
             ensure_no_app_selector(&selector, "trace")?;
-            trace_command(cli, &sid, hours, verbose, json).await?
+            trace_command(cli, &sid, verbose, json).await?
         }
         AppCommand::Device(args) => device_command(cli, args, selector).await?,
         AppCommand::Ota(args) => ota_command(cli, args, selector).await?,
@@ -1672,47 +1664,31 @@ impl RequestTimelineOutputState {
     }
 }
 
-async fn trace_command(cli: &Ctx, sid: &str, hours: u32, verbose: bool, json: bool) -> Result<()> {
+async fn trace_command(cli: &Ctx, sid: &str, verbose: bool, json: bool) -> Result<()> {
     let api_key = resolve_api_key()?;
-    if let Some(output) =
-        ling_plugin_app::records::query_agent_logs(&cli.api_base_url, &api_key, sid).await?
-    {
-        let has_logs = output
+    let logs = ling_plugin_app::records::query_agent_logs(&cli.api_base_url, &api_key, sid).await?;
+    let has_logs = logs.as_ref().is_some_and(|output| {
+        output
             .get("data")
             .and_then(Value::as_array)
-            .is_some_and(|logs| !logs.is_empty());
-        if has_logs {
-            if json {
-                return print_json(&output);
-            }
-            println!(
-                "{}",
-                ling_plugin_app::records::render_agent_trace(&output, sid, verbose)?
-            );
-            return Ok(());
-        }
-    }
-
-    eprintln!("未取得 Agent 执行日志，正在兼容扫描最近 {hours} 小时的请求记录…");
-    let outcome =
-        ling_plugin_app::records::find_by_sid(&cli.api_base_url, &api_key, sid, hours).await?;
-    // SID 是请求唯一标识：要么恰好一条，要么未命中（报错退出，便于脚本判断）
-    let Some(record) = outcome.record else {
-        anyhow::bail!(ling_plugin_app::records::miss_message(
-            sid,
-            hours,
-            outcome.truncated
-        ));
-    };
-    if json {
-        print_json(&record)
-    } else {
-        println!(
-            "{}",
-            ling_plugin_app::records::render_record(&record, sid, verbose)
+            .is_some_and(|logs| !logs.is_empty())
+    });
+    // 未命中报错退出，便于脚本判断。
+    if !has_logs {
+        anyhow::bail!(
+            "未找到 SID 为 {sid} 的 Agent 执行日志；请核对 SID，\
+             或确认该会话是否已产生日志（日志有保留期）。"
         );
-        Ok(())
     }
+    let output = logs.expect("has_logs 已确认日志存在");
+    if json {
+        return print_json(&output);
+    }
+    println!(
+        "{}",
+        ling_plugin_app::records::render_agent_trace(&output, sid, verbose)?
+    );
+    Ok(())
 }
 
 async fn device_command(cli: &Ctx, args: DeviceArgs, selector: AppSelector) -> Result<()> {
@@ -4694,14 +4670,8 @@ mod tests {
                 .expect("parse trace details");
             match cli.command {
                 Command::App(app) => match app.command {
-                    AppCommand::Trace {
-                        sid,
-                        hours,
-                        verbose,
-                        json,
-                    } => {
+                    AppCommand::Trace { sid, verbose, json } => {
                         assert_eq!(sid, "sid-1");
-                        assert_eq!(hours, 168);
                         assert!(verbose);
                         assert!(!json);
                     }
