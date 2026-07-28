@@ -63,11 +63,25 @@ ling ai chat "你好，请介绍一下自己"
 ling ai chat "解释一下 RAG" --stream
 
 ling ai tts 你好，今天天气怎么样
-ling ai tts -o hello.mp3 你好
+ling ai tts --vcn x5_lingyuzhao_flow -o hello.mp3 你好
+ling ai tts --list-vcn
 
 ling ai asr hello.pcm
 ling ai asr hello.wav
 ```
+
+TTS 支持以下发音人：
+
+| 名称 | VCN |
+| --- | --- |
+| 聆玉昭pro | `x5_lingyuzhao_flow` |
+| 聆小璇pro | `x5_lingxiaoxuan_flow` |
+| 聆玉言pro | `x5_lingyuyan_flow` |
+| 聆飞逸pro | `x5_lingfeiyi_flow` |
+| 聆小玥pro | `x5_lingxiaoyue_flow` |
+
+如果所选发音人不支持其他 TTS 参数且没有生成音频，命令会直接报错，不会返回
+对应的音频 URL，也不会写入 0 字节文件。
 
 ASR 音频应为 16kHz、16bit LE、单声道 PCM；WAV 会自动校验格式。
 

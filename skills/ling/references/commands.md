@@ -67,7 +67,7 @@ ling ai chat "解释 RAG" --stream
 ling ai chat "解释 RAG" --json
 
 ling ai tts 你好
-ling ai tts --vcn <vcn> --speed 60 你好
+ling ai tts --vcn x5_lingyuzhao_flow --speed 60 你好
 ling ai tts --format pcm --sample-rate 16000 -o hello.pcm 你好
 ling ai tts --list-vcn
 
@@ -75,6 +75,9 @@ ling ai asr hello.pcm
 ling ai asr hello.wav --vad-eos 800
 ling ai asr hello.pcm --json
 ```
+
+用 `ling ai tts --list-vcn` 查看并选择支持的发音人。TTS 返回 0 字节音频时，
+将其视为当前发音人不支持所选参数，不要把对应 URL 或空文件作为成功结果交付。
 
 ASR 音频应为 16kHz、16bit LE、单声道 PCM；WAV 会先校验格式。
 

@@ -137,8 +137,8 @@ struct TtsArgs {
     /// Text to synthesize. Multiple words are joined with spaces.
     #[arg(required_unless_present = "list_vcn")]
     text: Vec<String>,
-    /// Voice (VCN), e.g. x5_lingyuzhao_flow. Use --list-vcn to browse.
-    #[arg(long)]
+    /// Voice (VCN). Use --list-vcn to show names.
+    #[arg(long, value_parser = tts_vcn_parser())]
     vcn: Option<String>,
     /// Audio format.
     #[arg(long, value_parser = ["mp3", "pcm"])]
@@ -173,6 +173,14 @@ struct TtsArgs {
     /// Print the result as JSON.
     #[arg(long)]
     json: bool,
+}
+
+fn tts_vcn_parser() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(
+        ling_plugin_ai::SUPPORTED_VCNS
+            .iter()
+            .map(|voice| voice.value),
+    )
 }
 
 #[derive(Debug, Args)]
@@ -1087,10 +1095,8 @@ async fn chat_command(api_base_url: &str, args: ChatArgs) -> Result<()> {
 }
 
 async fn tts_command(cli: &Ctx, args: TtsArgs) -> Result<()> {
-    let api_key = resolve_api_key()?;
-
     if args.list_vcn {
-        let output = ling_plugin_ai::list_vcns(&cli.api_base_url, &api_key).await?;
+        let output = ling_plugin_ai::supported_vcns();
         if args.json {
             return print_json(&output);
         }
@@ -1098,6 +1104,7 @@ async fn tts_command(cli: &Ctx, args: TtsArgs) -> Result<()> {
         return Ok(());
     }
 
+    let api_key = resolve_api_key()?;
     let opts = ling_plugin_ai::TtsOptions {
         vcn: args.vcn,
         format: args.format,
@@ -4367,6 +4374,18 @@ mod tests {
             },
             other => panic!("expected ai command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn ai_tts_accepts_only_supported_vcns() {
+        for voice in ling_plugin_ai::SUPPORTED_VCNS {
+            Cli::try_parse_from(["ling", "ai", "tts", "--vcn", voice.value, "你好"])
+                .unwrap_or_else(|err| panic!("{} should be accepted: {err}", voice.value));
+        }
+
+        let err = Cli::try_parse_from(["ling", "ai", "tts", "--vcn", "x2_chongchong", "你好"])
+            .expect_err("unsupported voices should fail before the request");
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
     }
 
     #[test]

@@ -12,6 +12,35 @@ use unicode_width::UnicodeWidthStr;
 const ASR_CHUNK_BYTES: usize = 1280 * 4; // 160ms of 16k 16bit mono PCM per frame
 const ASR_CHUNK_PACE_MS: u64 = 40; // 4x realtime upload pacing; blasting breaks server-side init
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SupportedVcn {
+    pub name: &'static str,
+    pub value: &'static str,
+}
+
+pub const SUPPORTED_VCNS: &[SupportedVcn] = &[
+    SupportedVcn {
+        name: "聆玉昭pro",
+        value: "x5_lingyuzhao_flow",
+    },
+    SupportedVcn {
+        name: "聆小璇pro",
+        value: "x5_lingxiaoxuan_flow",
+    },
+    SupportedVcn {
+        name: "聆玉言pro",
+        value: "x5_lingyuyan_flow",
+    },
+    SupportedVcn {
+        name: "聆飞逸pro",
+        value: "x5_lingfeiyi_flow",
+    },
+    SupportedVcn {
+        name: "聆小玥pro",
+        value: "x5_lingxiaoyue_flow",
+    },
+];
+
 #[derive(Debug, Clone, Default)]
 pub struct TtsOptions {
     pub vcn: Option<String>,
@@ -116,8 +145,9 @@ pub async fn tts(
         }
     }
 
+    let audio = fetch_audio(&audio_url).await?;
     let saved = match output {
-        Some(path) => Some(download_audio(&audio_url, path).await?),
+        Some(path) => Some(save_audio(path, &audio)?),
         None => None,
     };
 
@@ -159,7 +189,7 @@ fn tts_init_payload(opts: &TtsOptions) -> Value {
     Value::Object(payload)
 }
 
-async fn download_audio(audio_url: &str, path: &Path) -> Result<(String, u64)> {
+async fn fetch_audio(audio_url: &str) -> Result<Vec<u8>> {
     let response = ling_core::client()?
         .get(audio_url)
         .send()
@@ -170,6 +200,18 @@ async fn download_audio(audio_url: &str, path: &Path) -> Result<(String, u64)> {
         bail!("下载 TTS 音频失败：HTTP {status}");
     }
     let bytes = response.bytes().await.context("读取 TTS 音频数据失败")?;
+    validate_audio(&bytes)?;
+    Ok(bytes.to_vec())
+}
+
+fn validate_audio(bytes: &[u8]) -> Result<()> {
+    if bytes.is_empty() {
+        bail!("TTS 未生成音频（0 bytes），当前发音人可能不支持所选参数");
+    }
+    Ok(())
+}
+
+fn save_audio(path: &Path, bytes: &[u8]) -> Result<(String, u64)> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -177,25 +219,18 @@ async fn download_audio(audio_url: &str, path: &Path) -> Result<(String, u64)> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("创建输出目录失败：{}", parent.display()))?;
     }
-    std::fs::write(path, &bytes)
-        .with_context(|| format!("写入音频文件失败：{}", path.display()))?;
+    std::fs::write(path, bytes).with_context(|| format!("写入音频文件失败：{}", path.display()))?;
     Ok((path.display().to_string(), bytes.len() as u64))
 }
 
-/// 获取发音人列表（GET {api_base}/v1/tts/vcn，Bearer API Key）。
-pub async fn list_vcns(api_base_url: &str, api_key: &str) -> Result<Value> {
-    let url = ling_core::http_url(api_base_url, "/v1/tts/vcn")?;
-    let response = ling_core::client()?
-        .get(url)
-        .header(header::AUTHORIZATION, ling_core::bearer(api_key))
-        .send()
-        .await?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        bail!("获取发音人列表失败：HTTP {status} {body}");
-    }
-    serde_json::from_str(&body).context("发音人列表响应不是合法 JSON")
+pub fn supported_vcns() -> Value {
+    json!({
+        "code": 0,
+        "data": SUPPORTED_VCNS
+            .iter()
+            .map(|voice| json!({"name": voice.name, "value": voice.value}))
+            .collect::<Vec<_>>()
+    })
 }
 
 pub fn render_vcns(value: &Value) -> Result<String> {
@@ -538,17 +573,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_empty_tts_audio() {
+        let err = validate_audio(&[]).unwrap_err().to_string();
+        assert!(err.contains("0 bytes"));
+        assert!(err.contains("可能不支持所选参数"));
+        validate_audio(&[1]).expect("non-empty audio should be accepted");
+    }
+
+    #[test]
     fn renders_vcn_table() {
-        let value = serde_json::json!({
-            "code": 0,
-            "data": [
-                {"name": "虫虫x2", "value": "x2_chongchong"},
-                {"name": "聆玉昭pro", "value": "x5_lingyuzhao_flow"}
-            ]
-        });
+        let value = supported_vcns();
         let out = render_vcns(&value).unwrap();
-        assert!(out.contains("x2_chongchong"));
-        assert!(out.contains("聆玉昭pro"));
-        assert!(out.contains("共 2 个发音人"));
+        for voice in SUPPORTED_VCNS {
+            assert!(out.contains(voice.name));
+            assert!(out.contains(voice.value));
+        }
+        assert!(out.contains("共 5 个发音人"));
+        assert!(!out.contains("x2_chongchong"));
     }
 }
