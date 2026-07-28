@@ -113,8 +113,9 @@ ling app deploy --version v1.0.0 --activate
 切换，或恢复官方托管版本：
 
 ```bash
-ling app chain custom v1.0.0
-ling app chain managed
+ling app chain versions
+ling app chain set custom v1.0.0
+ling app chain set managed
 ```
 
 ### 端云调试

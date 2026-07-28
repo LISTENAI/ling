@@ -211,8 +211,9 @@ ling app build --release
 ling app deploy --version v1.0.0 --dry-run
 ling app deploy --product-id <product_id> \
   --version v1.0.0 --version-name 首次发布 --activate
-ling app chain custom v1.0.0
-ling app chain managed
+ling app chain versions
+ling app chain set custom v1.0.0
+ling app chain set managed
 ```
 
 ## 知识库

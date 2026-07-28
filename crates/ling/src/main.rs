@@ -290,7 +290,7 @@ enum AppCommand {
     Build(ling_plugin_app_project::BuildArgs),
     /// Preview or upload an agent bundle to the platform.
     Deploy(ling_plugin_app_project::DeployArgs),
-    /// Select the managed or a custom Agent version for the app test chain.
+    /// List custom Agent versions or select the app test chain.
     Chain(ChainArgs),
     /// Inspect an app. Product id defaults to listenai.toml.
     Inspect {
@@ -623,6 +623,25 @@ struct ChainArgs {
 
 #[derive(Debug, Subcommand)]
 enum ChainCommand {
+    /// List uploaded custom Agent versions.
+    Versions {
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+        #[arg(long = "page-size", default_value_t = 20)]
+        page_size: u32,
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Select the chain mode and, for custom chains, an uploaded version.
+    Set {
+        #[command(subcommand)]
+        target: ChainSetCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ChainSetCommand {
     /// Use the latest managed Agent version.
     Managed {
         /// Print the raw JSON response.
@@ -2267,14 +2286,37 @@ async fn chain_command(cli: &Ctx, args: ChainArgs, selector: AppSelector) -> Res
     let app = resolve_app(cli, selector).await?;
     let detail = get_app_detail(cli, &app).await?;
     let app_id = ling_plugin_app::project_app_id(config_view::project_data(&detail))
-        .context("应用详情缺少 App ID，无法切换测试链路版本")?;
-    let (version, json, message) = match args.command {
-        ChainCommand::Managed { json } => (
+        .context("应用详情缺少 App ID，无法管理测试链路")?;
+    if let ChainCommand::Versions {
+        page,
+        page_size,
+        json,
+    } = &args.command
+    {
+        let output = management::list_framework_agent_versions(
+            &cli.api_base_url,
+            &app.api_key,
+            &app_id,
+            *page,
+            *page_size,
+        )
+        .await?;
+        if *json {
+            return print_json(&output);
+        }
+        println!("{}", config_view::render_framework_agent_versions(&output)?);
+        return Ok(());
+    }
+    let ChainCommand::Set { target } = args.command else {
+        unreachable!();
+    };
+    let (version, json, message) = match target {
+        ChainSetCommand::Managed { json } => (
             None,
             json,
             "测试链路已切换为 managed（官方最新版本）".to_owned(),
         ),
-        ChainCommand::Custom { version, json } => {
+        ChainSetCommand::Custom { version, json } => {
             let version = normalize_framework_agent_version(&version)?;
             (
                 Some(version.clone()),
@@ -3786,13 +3828,48 @@ mod tests {
     }
 
     #[test]
-    fn parses_chain_modes_and_deploy_activation() {
+    fn parses_chain_version_listing_and_selection() {
+        let versions = Cli::try_parse_from([
+            "ling",
+            "app",
+            "--app-id",
+            "app-123",
+            "chain",
+            "versions",
+            "--page",
+            "2",
+            "--page-size",
+            "50",
+            "--json",
+        ])
+        .expect("parse chain versions");
+        match versions.command {
+            Command::App(AppArgs {
+                command:
+                    AppCommand::Chain(ChainArgs {
+                        command:
+                            ChainCommand::Versions {
+                                page,
+                                page_size,
+                                json,
+                            },
+                    }),
+                ..
+            }) => {
+                assert_eq!(page, 2);
+                assert_eq!(page_size, 50);
+                assert!(json);
+            }
+            other => panic!("expected chain versions command, got {other:?}"),
+        }
+
         let managed = Cli::try_parse_from([
             "ling",
             "app",
             "--product-id",
             "product-123",
             "chain",
+            "set",
             "managed",
         ])
         .expect("parse managed chain");
@@ -3800,21 +3877,26 @@ mod tests {
             managed.command,
             Command::App(AppArgs {
                 command: AppCommand::Chain(ChainArgs {
-                    command: ChainCommand::Managed { json: false }
+                    command: ChainCommand::Set {
+                        target: ChainSetCommand::Managed { json: false }
+                    }
                 }),
                 ..
             })
         ));
 
         let custom = Cli::try_parse_from([
-            "ling", "app", "--app-id", "app-123", "chain", "custom", "v0.0.8", "--json",
+            "ling", "app", "--app-id", "app-123", "chain", "set", "custom", "v0.0.8", "--json",
         ])
         .expect("parse custom chain");
         match custom.command {
             Command::App(AppArgs {
                 command:
                     AppCommand::Chain(ChainArgs {
-                        command: ChainCommand::Custom { version, json },
+                        command:
+                            ChainCommand::Set {
+                                target: ChainSetCommand::Custom { version, json },
+                            },
                     }),
                 ..
             }) => {
@@ -3822,6 +3904,12 @@ mod tests {
                 assert!(json);
             }
             other => panic!("expected custom chain command, got {other:?}"),
+        }
+
+        for old_command in ["managed", "custom"] {
+            let err = Cli::try_parse_from(["ling", "app", "chain", old_command])
+                .expect_err("chain modes must be selected through chain set");
+            assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
         }
 
         let deploy =

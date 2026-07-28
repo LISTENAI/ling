@@ -80,6 +80,35 @@ pub async fn set_framework_agent_version(
     .await
 }
 
+pub async fn list_framework_agent_versions(
+    api_base_url: &str,
+    api_key: &str,
+    app_id: &str,
+    page: u32,
+    page_size: u32,
+) -> Result<Value> {
+    let url = framework_agent_versions_url(api_base_url, app_id, page, page_size)?;
+    send_json(Method::GET, url, api_key, None).await
+}
+
+fn framework_agent_versions_url(
+    api_base_url: &str,
+    app_id: &str,
+    page: u32,
+    page_size: u32,
+) -> Result<Url> {
+    let mut url = endpoint(
+        api_base_url,
+        &["v1", "framework", "agents", app_id, "versions"],
+    )?;
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("page", &page.to_string());
+        query.append_pair("page_size", &page_size.to_string());
+    }
+    Ok(url)
+}
+
 pub async fn list_resource(
     api_base_url: &str,
     api_key: &str,
@@ -422,6 +451,16 @@ mod tests {
         assert_eq!(
             url.as_str(),
             "https://api.listenai.com/v1/projects/project%2Fid/roles/role%20id"
+        );
+    }
+
+    #[test]
+    fn framework_versions_url_uses_app_id_and_snake_case_pagination() {
+        let url =
+            framework_agent_versions_url("https://api.listenai.com/base", "app/id", 2, 50).unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://api.listenai.com/v1/framework/agents/app%2Fid/versions?page=2&page_size=50"
         );
     }
 }

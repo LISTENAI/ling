@@ -295,6 +295,47 @@ pub fn render_management_config(value: &Value) -> Result<String> {
     ))
 }
 
+pub fn render_framework_agent_versions(value: &Value) -> Result<String> {
+    let data = response_data(value)?;
+    let items = data
+        .get("items")
+        .and_then(Value::as_array)
+        .context("版本列表响应缺少 data.items 数组")?;
+    if items.is_empty() {
+        return Ok("暂无已上传的自定义 Agent 版本。".to_owned());
+    }
+    let rows = items
+        .iter()
+        .map(|item| {
+            vec![
+                field(item, "version"),
+                config_preview(&field(item, "version_name"), 28),
+                field(item, "sdk_version"),
+                item.get("file_size")
+                    .and_then(Value::as_u64)
+                    .map(format_file_size)
+                    .unwrap_or_else(|| "-".to_owned()),
+                field(item, "created_at"),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let mut output = render_table(&["版本", "名称", "SDK", "大小", "创建时间"], &rows);
+    let total = data
+        .get("total")
+        .and_then(Value::as_u64)
+        .unwrap_or(rows.len() as u64);
+    let page = data.get("page").and_then(Value::as_u64).unwrap_or(1);
+    let page_size = data
+        .get("page_size")
+        .and_then(Value::as_u64)
+        .unwrap_or(rows.len() as u64);
+    output.push_str(&format!(
+        "\n共 {total} 个版本；当前第 {page} 页，每页 {page_size} 个。"
+    ));
+    output.push_str("\n使用 `ling app chain set custom <version>` 切换测试链路。");
+    Ok(output)
+}
+
 pub fn render_management_role_list(value: &Value) -> Result<String> {
     let roles = response_items(value)?;
     if roles.is_empty() {
@@ -615,6 +656,16 @@ fn config_preview(value: &str, max_chars: usize) -> String {
     let mut preview = single_line.chars().take(max_chars).collect::<String>();
     preview.push('…');
     preview
+}
+
+fn format_file_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    if bytes < 1024 * 1024 {
+        return format!("{:.1} KiB", bytes as f64 / 1024.0);
+    }
+    format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
 }
 
 fn config_field_constraint(value: &Value, key: &str) -> String {
@@ -950,5 +1001,41 @@ mod tests {
         assert!(output.contains("oneshot / full-duplex / half-duplex"));
         assert!(output.contains("chat_completions"));
         assert!(output.contains("文本 ≤8192；只写"));
+    }
+
+    #[test]
+    fn renders_framework_agent_versions_without_storage_details() {
+        let value = json!({
+            "code": 0,
+            "data": {
+                "items": [{
+                    "app_id": "app-1",
+                    "version": "v0.1.2",
+                    "version_name": "scope isolation",
+                    "description": "test version",
+                    "sdk_version": "0.1.0-mvp.5",
+                    "created_at": "2026-07-27T03:44:35Z",
+                    "published_by": "123",
+                    "oss_bucket": "private-bucket",
+                    "oss_path": "agent-bundles/app-1/v0.1.2.js",
+                    "file_size": 3073,
+                    "file_hash": "secret-ish-internal-detail"
+                }],
+                "page": 1,
+                "page_size": 20,
+                "total": 1
+            }
+        });
+
+        let output = render_framework_agent_versions(&value).unwrap();
+
+        assert!(output.contains("v0.1.2"));
+        assert!(output.contains("scope isolation"));
+        assert!(output.contains("0.1.0-mvp.5"));
+        assert!(output.contains("3.0 KiB"));
+        assert!(output.contains("共 1 个版本"));
+        assert!(output.contains("chain set custom"));
+        assert!(!output.contains("private-bucket"));
+        assert!(!output.contains("secret-ish-internal-detail"));
     }
 }
