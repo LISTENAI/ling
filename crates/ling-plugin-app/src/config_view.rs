@@ -218,7 +218,27 @@ pub fn render_management_config(value: &Value) -> Result<String> {
         .get("system_prompt")
         .and_then(Value::as_str)
         .unwrap_or("");
+    let description = value
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let rows = vec![
+        vec![
+            "name".to_owned(),
+            "应用名称".to_owned(),
+            config_value(value, "name"),
+            config_field_constraint(value, "name"),
+        ],
+        vec![
+            "description".to_owned(),
+            "应用描述".to_owned(),
+            if description.is_empty() {
+                "（空）".to_owned()
+            } else {
+                config_preview(description, 32)
+            },
+            config_field_constraint(value, "description"),
+        ],
         vec![
             "interaction_mode".to_owned(),
             "交互模式".to_owned(),
@@ -274,20 +294,56 @@ pub fn render_management_config(value: &Value) -> Result<String> {
     ))
 }
 
-pub fn render_framework_agent_versions(value: &Value) -> Result<String> {
+pub fn framework_agent_version(value: &Value) -> Result<&str> {
+    response_data(value)?
+        .get("version")
+        .and_then(Value::as_str)
+        .context("链路版本响应缺少 data.version")
+}
+
+pub fn render_framework_agent_version(value: &Value) -> Result<String> {
+    let version = framework_agent_version(value)?;
+    let (mode, version) = if version.is_empty() {
+        ("managed", "官方最新版本")
+    } else {
+        ("custom", version)
+    };
+    Ok(render_table(
+        &["配置", "当前值"],
+        &[
+            vec!["模式".to_owned(), mode.to_owned()],
+            vec!["版本".to_owned(), version.to_owned()],
+        ],
+    ))
+}
+
+pub fn render_framework_agent_versions(value: &Value, current_version: &str) -> Result<String> {
     let data = response_data(value)?;
     let items = data
         .get("items")
         .and_then(Value::as_array)
         .context("版本列表响应缺少 data.items 数组")?;
+    let current = if current_version.is_empty() {
+        "managed（官方最新版本）".to_owned()
+    } else {
+        format!("custom（{current_version}）")
+    };
     if items.is_empty() {
-        return Ok("暂无已上传的自定义 Agent 版本。".to_owned());
+        return Ok(format!(
+            "当前测试链路：{current}\n\n暂无已上传的自定义 Agent 版本。"
+        ));
     }
     let rows = items
         .iter()
         .map(|item| {
+            let version = field(item, "version");
             vec![
-                field(item, "version"),
+                if version == current_version {
+                    "当前".to_owned()
+                } else {
+                    "-".to_owned()
+                },
+                version,
                 config_preview(&field(item, "version_name"), 28),
                 field(item, "sdk_version"),
                 item.get("file_size")
@@ -298,7 +354,10 @@ pub fn render_framework_agent_versions(value: &Value) -> Result<String> {
             ]
         })
         .collect::<Vec<_>>();
-    let mut output = render_table(&["版本", "名称", "SDK", "大小", "创建时间"], &rows);
+    let mut output = format!(
+        "当前测试链路：{current}\n\n{}",
+        render_table(&["状态", "版本", "名称", "SDK", "大小", "创建时间"], &rows)
+    );
     let total = data
         .get("total")
         .and_then(Value::as_u64)
@@ -671,6 +730,20 @@ fn config_field_constraint(value: &Value, key: &str) -> String {
         constraint.push_str("；空值=默认");
     }
     if field
+        .get("non_empty")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        constraint.push_str("；非空");
+    }
+    if field
+        .get("empty_clears")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        constraint.push_str("；空值=清除");
+    }
+    if field
         .get("write_only")
         .and_then(Value::as_bool)
         .unwrap_or(false)
@@ -912,6 +985,8 @@ mod tests {
     fn renders_management_config_with_editable_fields() {
         let long_prompt = format!("第一行\n第二行 {}", "很长的系统提示词".repeat(12));
         let value = json!({
+            "name": "设备助手",
+            "description": "",
             "interaction_mode": "full-duplex",
             "system_prompt": long_prompt.clone(),
             "protocol": "chat_completions",
@@ -919,6 +994,16 @@ mod tests {
             "model": "deepseek-chat",
             "authorization_configured": true,
             "editable_fields": {
+                "name": {
+                    "type": "string",
+                    "max_length": 30,
+                    "non_empty": true
+                },
+                "description": {
+                    "type": "string",
+                    "max_length": 60,
+                    "empty_clears": true
+                },
                 "interaction_mode": {
                     "type": "enum",
                     "values": ["oneshot", "full-duplex", "half-duplex"]
@@ -945,6 +1030,10 @@ mod tests {
         let output = render_management_config(&value).unwrap();
 
         assert!(output.contains("Key"));
+        assert!(output.contains("name"));
+        assert!(output.contains("设备助手"));
+        assert!(output.contains("description"));
+        assert!(output.contains("（空）"));
         assert!(output.contains("interaction_mode"));
         assert!(output.contains("system_prompt"));
         assert!(output.contains("authorization"));
@@ -954,6 +1043,8 @@ mod tests {
         assert!(!output.contains(&long_prompt));
         assert!(output.contains("oneshot / full-duplex / half-duplex"));
         assert!(output.contains("chat_completions"));
+        assert!(output.contains("文本 ≤30；非空"));
+        assert!(output.contains("文本 ≤60；空值=清除"));
         assert!(output.contains("文本 ≤8192；只写"));
     }
 
@@ -981,8 +1072,10 @@ mod tests {
             }
         });
 
-        let output = render_framework_agent_versions(&value).unwrap();
+        let output = render_framework_agent_versions(&value, "v0.1.2").unwrap();
 
+        assert!(output.contains("当前测试链路：custom（v0.1.2）"));
+        assert!(output.contains("当前"));
         assert!(output.contains("v0.1.2"));
         assert!(output.contains("scope isolation"));
         assert!(output.contains("0.1.0-mvp.5"));
@@ -991,5 +1084,19 @@ mod tests {
         assert!(output.contains("chain set custom"));
         assert!(!output.contains("private-bucket"));
         assert!(!output.contains("secret-ish-internal-detail"));
+    }
+
+    #[test]
+    fn renders_managed_and_custom_framework_agent_versions() {
+        let managed = json!({"data": {"version": ""}});
+        let custom = json!({"data": {"version": "v0.1.1"}});
+
+        let managed_output = render_framework_agent_version(&managed).unwrap();
+        assert!(managed_output.contains("managed"));
+        assert!(managed_output.contains("官方最新版本"));
+
+        let custom_output = render_framework_agent_version(&custom).unwrap();
+        assert!(custom_output.contains("custom"));
+        assert!(custom_output.contains("v0.1.1"));
     }
 }

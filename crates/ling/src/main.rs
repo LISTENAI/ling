@@ -23,7 +23,9 @@ const PLATFORM_APP_CONFIG_URL: &str = "https://platform.listenai.com/appConfig";
 const PLATFORM_KB_URL: &str = "https://platform.listenai.com/datasets";
 const MAX_HOTWORD_CHARS: usize = 24;
 const MAX_HOTWORDS_TOTAL_CHARS: usize = 1024;
-const APP_CONFIG_EDITABLE_KEYS: [&str; 6] = [
+const APP_CONFIG_EDITABLE_KEYS: [&str; 8] = [
+    "name",
+    "description",
     "interaction_mode",
     "system_prompt",
     "protocol",
@@ -345,7 +347,7 @@ enum AppCommand {
     Tone(ToneArgs),
     /// MCP server configuration.
     Mcp(McpArgs),
-    /// Agent prompt, model access, and interaction configuration.
+    /// App metadata, interaction, prompt, and model access.
     Config(ConfigArgs),
 }
 
@@ -625,6 +627,12 @@ struct ChainArgs {
 
 #[derive(Debug, Subcommand)]
 enum ChainCommand {
+    /// Show the selected test chain mode and version.
+    Show {
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
+    },
     /// List uploaded custom Agent versions.
     Versions {
         #[arg(long, default_value_t = 1)]
@@ -791,7 +799,7 @@ enum McpCommand {
 
 #[derive(Debug, Args)]
 struct JsonEditArgs {
-    /// Set a JSON field, for example --set persona='"A helpful assistant"'.
+    /// Set a field as key=value. Repeat to update multiple fields.
     #[arg(long = "set", value_name = "key=value", conflicts_with = "file")]
     set: Vec<String>,
     /// Read the request object from a JSON file.
@@ -807,12 +815,12 @@ struct ConfigArgs {
 
 #[derive(Debug, Subcommand)]
 enum ConfigCommand {
-    /// Show the interaction mode, system prompt, and model access.
+    /// Show app metadata, interaction, prompt, and model access.
     Show {
         #[arg(long)]
         json: bool,
     },
-    /// Update interaction_mode, system_prompt, protocol, endpoint, model, or authorization.
+    /// Update fields shown by `config show`.
     Edit {
         #[command(flatten)]
         input: JsonEditArgs,
@@ -2279,52 +2287,70 @@ async fn chain_command(cli: &Ctx, args: ChainArgs, selector: AppSelector) -> Res
     let detail = get_app_detail(cli, &app).await?;
     let app_id = ling_plugin_app::project_app_id(config_view::project_data(&detail))
         .context("应用详情缺少 App ID，无法管理测试链路")?;
-    if let ChainCommand::Versions {
-        page,
-        page_size,
-        json,
-    } = &args.command
-    {
-        let output = management::list_framework_agent_versions(
-            &cli.api_base_url,
-            &app.api_key,
-            &app_id,
-            *page,
-            *page_size,
-        )
-        .await?;
-        if *json {
-            return print_json(&output);
+    match args.command {
+        ChainCommand::Show { json } => {
+            let output =
+                management::get_framework_agent_version(&cli.api_base_url, &app.api_key, &app_id)
+                    .await?;
+            if json {
+                print_json(&output)
+            } else {
+                println!("{}", config_view::render_framework_agent_version(&output)?);
+                Ok(())
+            }
         }
-        println!("{}", config_view::render_framework_agent_versions(&output)?);
-        return Ok(());
-    }
-    let ChainCommand::Set { target } = args.command else {
-        unreachable!();
-    };
-    let (version, json, message) = match target {
-        ChainSetCommand::Managed { json } => (
-            None,
+        ChainCommand::Versions {
+            page,
+            page_size,
             json,
-            "测试链路已切换为 managed（官方最新版本）".to_owned(),
-        ),
-        ChainSetCommand::Custom { version, json } => {
-            let version = normalize_framework_agent_version(&version)?;
-            (
-                Some(version.clone()),
-                json,
-                format!("测试链路已切换为 custom（{version}）"),
+        } => {
+            let output = management::list_framework_agent_versions(
+                &cli.api_base_url,
+                &app.api_key,
+                &app_id,
+                page,
+                page_size,
             )
+            .await?;
+            if json {
+                return print_json(&output);
+            }
+            let current =
+                management::get_framework_agent_version(&cli.api_base_url, &app.api_key, &app_id)
+                    .await?;
+            let current_version = config_view::framework_agent_version(&current)?;
+            println!(
+                "{}",
+                config_view::render_framework_agent_versions(&output, current_version)?
+            );
+            Ok(())
         }
-    };
-    let output = management::set_framework_agent_version(
-        &cli.api_base_url,
-        &app.api_key,
-        &app_id,
-        version.as_deref(),
-    )
-    .await?;
-    print_action_or_json(&output, json, &message)
+        ChainCommand::Set { target } => {
+            let (version, json, message) = match target {
+                ChainSetCommand::Managed { json } => (
+                    None,
+                    json,
+                    "测试链路已切换为 managed（官方最新版本）".to_owned(),
+                ),
+                ChainSetCommand::Custom { version, json } => {
+                    let version = normalize_framework_agent_version(&version)?;
+                    (
+                        Some(version.clone()),
+                        json,
+                        format!("测试链路已切换为 custom（{version}）"),
+                    )
+                }
+            };
+            let output = management::set_framework_agent_version(
+                &cli.api_base_url,
+                &app.api_key,
+                &app_id,
+                version.as_deref(),
+            )
+            .await?;
+            print_action_or_json(&output, json, &message)
+        }
+    }
 }
 
 fn normalize_framework_agent_version(value: &str) -> Result<String> {
@@ -2942,7 +2968,8 @@ async fn config_command(cli: &Ctx, args: ConfigArgs, selector: AppSelector) -> R
     } = resolve_app(cli, selector).await?;
     match args.command {
         ConfigCommand::Show { json } => {
-            let (interaction, prompt, model) = tokio::try_join!(
+            let (project, interaction, prompt, model) = tokio::try_join!(
+                management::get_project(&cli.api_base_url, &api_key, &project_id),
                 management::get_resource(
                     &cli.api_base_url,
                     &api_key,
@@ -2962,7 +2989,7 @@ async fn config_command(cli: &Ctx, args: ConfigArgs, selector: AppSelector) -> R
                     &["agent", "model"],
                 ),
             )?;
-            let output = config_show_output(&interaction, &prompt, &model);
+            let output = config_show_output(&project, &interaction, &prompt, &model);
             if json {
                 print_json(&output)
             } else {
@@ -2990,6 +3017,13 @@ async fn config_command(cli: &Ctx, args: ConfigArgs, selector: AppSelector) -> R
                 );
             }
             let mut results = serde_json::Map::new();
+
+            if let Some(project) = take_project_config(&mut fields)? {
+                let output =
+                    management::update_project(&cli.api_base_url, &api_key, &project_id, project)
+                        .await?;
+                results.insert("project".to_owned(), output);
+            }
 
             if let Some(value) = fields.remove("interaction_mode") {
                 let mode = interaction_mode_value(&value)?;
@@ -3089,6 +3123,25 @@ async fn config_command(cli: &Ctx, args: ConfigArgs, selector: AppSelector) -> R
     }
 }
 
+fn take_project_config(fields: &mut serde_json::Map<String, Value>) -> Result<Option<Value>> {
+    let mut project = serde_json::Map::new();
+    if let Some(value) = fields.remove("name") {
+        let name = value.as_str().context("name 必须是字符串")?.trim();
+        if name.is_empty() {
+            anyhow::bail!("name 不能为空");
+        }
+        project.insert("name".to_owned(), Value::String(name.to_owned()));
+    }
+    if let Some(value) = fields.remove("description") {
+        let description = value.as_str().context("description 必须是字符串")?.trim();
+        project.insert(
+            "description".to_owned(),
+            Value::String(description.to_owned()),
+        );
+    }
+    Ok((!project.is_empty()).then(|| Value::Object(project)))
+}
+
 fn interaction_mode_value(value: &Value) -> Result<i64> {
     match value {
         Value::Number(number) => number
@@ -3107,7 +3160,12 @@ fn interaction_mode_value(value: &Value) -> Result<i64> {
     }
 }
 
-fn config_show_output(interaction: &Value, prompt: &Value, model: &Value) -> Value {
+fn config_show_output(
+    project: &Value,
+    interaction: &Value,
+    prompt: &Value,
+    model: &Value,
+) -> Value {
     let mode = interaction
         .pointer("/data/interaction_mode")
         .and_then(Value::as_i64)
@@ -3125,6 +3183,8 @@ fn config_show_output(interaction: &Value, prompt: &Value, model: &Value) -> Val
         .and_then(Value::as_bool)
         .unwrap_or(false);
     serde_json::json!({
+        "name": field(project, "name"),
+        "description": field(project, "description"),
         "interaction_mode": mode,
         "system_prompt": field(prompt, "system_prompt"),
         "protocol": field(model, "protocol"),
@@ -3132,6 +3192,16 @@ fn config_show_output(interaction: &Value, prompt: &Value, model: &Value) -> Val
         "model": field(model, "model"),
         "authorization_configured": authorization_configured,
         "editable_fields": {
+            "name": {
+                "type": "string",
+                "max_length": 30,
+                "non_empty": true
+            },
+            "description": {
+                "type": "string",
+                "max_length": 60,
+                "empty_clears": true
+            },
             "interaction_mode": {
                 "type": "enum",
                 "values": ["oneshot", "full-duplex", "half-duplex"]
@@ -3767,6 +3837,20 @@ mod tests {
     }
 
     #[test]
+    fn app_metadata_is_only_edited_through_config() {
+        assert!(Cli::try_parse_from(["ling", "app", "edit", "--name", "新的应用名称"]).is_err());
+        Cli::try_parse_from([
+            "ling",
+            "app",
+            "config",
+            "edit",
+            "--set",
+            "name=新的应用名称",
+        ])
+        .expect("parse config metadata edit");
+    }
+
+    #[test]
     fn role_set_builds_nested_tts_json_and_literals() {
         let body = json_body_from_input(
             JsonEditArgs {
@@ -3821,6 +3905,20 @@ mod tests {
 
     #[test]
     fn parses_chain_version_listing_and_selection() {
+        let show = Cli::try_parse_from([
+            "ling", "app", "--app-id", "app-123", "chain", "show", "--json",
+        ])
+        .expect("parse chain show");
+        assert!(matches!(
+            show.command,
+            Command::App(AppArgs {
+                command: AppCommand::Chain(ChainArgs {
+                    command: ChainCommand::Show { json: true }
+                }),
+                ..
+            })
+        ));
+
         let versions = Cli::try_parse_from([
             "ling",
             "app",
@@ -4054,6 +4152,12 @@ mod tests {
     #[test]
     fn config_show_output_is_flat_and_describes_editable_fields() {
         let output = config_show_output(
+            &serde_json::json!({
+                "data": {
+                    "name": "设备助手",
+                    "description": "桌面测试应用"
+                }
+            }),
             &serde_json::json!({"data": {"interaction_mode": 1}}),
             &serde_json::json!({"data": {"system_prompt": "你是设备助手"}}),
             &serde_json::json!({
@@ -4066,6 +4170,8 @@ mod tests {
             }),
         );
 
+        assert_eq!(output["name"], "设备助手");
+        assert_eq!(output["description"], "桌面测试应用");
         assert_eq!(output["interaction_mode"], "full-duplex");
         assert_eq!(output["system_prompt"], "你是设备助手");
         assert_eq!(output["protocol"], "chat_completions");
@@ -4083,6 +4189,52 @@ mod tests {
             output["editable_fields"]["authorization"]["write_only"],
             true
         );
+        assert_eq!(output["editable_fields"]["name"]["non_empty"], true);
+        assert_eq!(output["editable_fields"]["name"]["max_length"], 30);
+        assert_eq!(
+            output["editable_fields"]["description"]["empty_clears"],
+            true
+        );
+        assert_eq!(output["editable_fields"]["description"]["max_length"], 60);
+    }
+
+    #[test]
+    fn project_config_validates_and_normalizes_metadata() {
+        let mut fields = serde_json::json!({
+            "name": "  新名称  ",
+            "description": "  新描述  ",
+            "model": "deepseek-chat"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let project = take_project_config(&mut fields).unwrap().unwrap();
+        assert_eq!(project["name"], "新名称");
+        assert_eq!(project["description"], "新描述");
+        assert_eq!(fields["model"], "deepseek-chat");
+
+        let mut empty_description = serde_json::json!({"description": "   "})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            take_project_config(&mut empty_description)
+                .unwrap()
+                .unwrap(),
+            serde_json::json!({"description": ""})
+        );
+
+        let mut empty_name = serde_json::json!({"name": "   "})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(take_project_config(&mut empty_name).is_err());
+
+        let mut numeric_description = serde_json::json!({"description": 42})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(take_project_config(&mut numeric_description).is_err());
     }
 
     #[test]

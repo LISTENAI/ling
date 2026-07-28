@@ -112,6 +112,7 @@ ling app deploy --version <version> --activate
 
 - `init` 将本地项目与目标应用关联。
 - 自定义 Agent 需要上传并激活测试版本，再通过 `request` 和 `trace` 验证。
+- 用 `ling app chain show` 确认当前测试链路模式和版本。
 - 用 `ling app chain versions` 查询已上传、可选择的自定义 Agent 版本。
 - 部署版本必须为 `X.Y.Z` 或 `vX.Y.Z`，同一 App 下不能重复且必须递增。
 - 正式上传前先用 `--dry-run` 检查目标应用和构建产物。

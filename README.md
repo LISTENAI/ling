@@ -91,6 +91,9 @@ ASR 音频应为 16kHz、16bit LE、单声道 PCM；WAV 会自动校验格式。
 ling app list
 ling app inspect <product_id>
 ling app inspect <product_id> --json
+ling app --product-id <product_id> config show
+ling app --product-id <product_id> config edit --set name=新名称
+ling app --product-id <product_id> config edit --set description=新描述
 ```
 
 大多数应用命令使用 Product ID。在 Agent 项目目录中，`ling` 会读取
@@ -127,6 +130,7 @@ ling app deploy --version v1.0.0 --activate
 切换，或恢复官方托管版本：
 
 ```bash
+ling app chain show
 ling app chain versions
 ling app chain set custom v1.0.0
 ling app chain set managed

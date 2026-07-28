@@ -53,6 +53,37 @@ pub async fn get_project(api_base_url: &str, api_key: &str, project_id: &str) ->
     .await
 }
 
+pub async fn update_project(
+    api_base_url: &str,
+    api_key: &str,
+    project_id: &str,
+    body: Value,
+) -> Result<Value> {
+    request(
+        api_base_url,
+        api_key,
+        Method::PUT,
+        &["v1", "projects", project_id],
+        Some(body),
+    )
+    .await
+}
+
+pub async fn get_framework_agent_version(
+    api_base_url: &str,
+    api_key: &str,
+    app_id: &str,
+) -> Result<Value> {
+    request(
+        api_base_url,
+        api_key,
+        Method::GET,
+        &["v1", "framework", "agents", app_id, "version"],
+        None,
+    )
+    .await
+}
+
 pub async fn set_framework_agent_version(
     api_base_url: &str,
     api_key: &str,

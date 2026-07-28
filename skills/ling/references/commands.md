@@ -144,6 +144,8 @@ ling app mcp disable <server_id>
 ling app mcp delete <server_id>
 
 ling app config show
+ling app config edit --set name=<name>
+ling app config edit --set description=<description>
 ling app config edit --set system-prompt='"..."'
 ling app config reset-model
 ling app config test-model --endpoint <url> --model <model>
@@ -213,6 +215,7 @@ ling app build --release
 ling app deploy --version v1.0.0 --dry-run
 ling app deploy --product-id <product_id> \
   --version v1.0.0 --version-name 首次发布 --activate
+ling app chain show
 ling app chain versions
 ling app chain set custom v1.0.0
 ling app chain set managed
