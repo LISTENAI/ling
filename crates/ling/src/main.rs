@@ -23,6 +23,14 @@ const PLATFORM_APP_CONFIG_URL: &str = "https://platform.listenai.com/appConfig";
 const PLATFORM_KB_URL: &str = "https://platform.listenai.com/datasets";
 const MAX_HOTWORD_CHARS: usize = 24;
 const MAX_HOTWORDS_TOTAL_CHARS: usize = 1024;
+const APP_CONFIG_EDITABLE_KEYS: [&str; 6] = [
+    "interaction_mode",
+    "system_prompt",
+    "protocol",
+    "endpoint",
+    "model",
+    "authorization",
+];
 
 #[derive(Debug, Parser)]
 #[command(name = "ling", version, about = "ListenAI local CLI")]
@@ -783,7 +791,7 @@ enum ConfigCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Update supported config keys with --set or a JSON object.
+    /// Update interaction_mode, system_prompt, protocol, endpoint, model, or authorization.
     Edit {
         #[command(flatten)]
         input: JsonEditArgs,
@@ -2920,15 +2928,11 @@ async fn config_command(cli: &Ctx, args: ConfigArgs, selector: AppSelector) -> R
                     &["agent", "model"],
                 ),
             )?;
-            let output = serde_json::json!({
-                "interaction": interaction.get("data").cloned().unwrap_or(Value::Null),
-                "prompt": prompt.get("data").cloned().unwrap_or(Value::Null),
-                "model": model.get("data").cloned().unwrap_or(Value::Null),
-            });
+            let output = config_show_output(&interaction, &prompt, &model);
             if json {
                 print_json(&output)
             } else {
-                println!("{}", render_config_summary(&output));
+                println!("{}", config_view::render_management_config(&output)?);
                 Ok(())
             }
         }
@@ -2941,23 +2945,14 @@ async fn config_command(cli: &Ctx, args: ConfigArgs, selector: AppSelector) -> R
                 .context("config edit 请求必须是 JSON 对象")?;
             let unsupported = fields
                 .keys()
-                .filter(|key| {
-                    !matches!(
-                        key.as_str(),
-                        "interaction_mode"
-                            | "system_prompt"
-                            | "protocol"
-                            | "endpoint"
-                            | "authorization"
-                            | "model"
-                    )
-                })
+                .filter(|key| !APP_CONFIG_EDITABLE_KEYS.contains(&key.as_str()))
                 .cloned()
                 .collect::<Vec<_>>();
             if !unsupported.is_empty() {
                 anyhow::bail!(
-                    "服务端当前不支持这些 app config 字段：{}。可用字段：interaction_mode、system_prompt、protocol、endpoint、authorization、model",
-                    unsupported.join(", ")
+                    "服务端当前不支持这些 app config 字段：{}。可用字段：{}",
+                    unsupported.join(", "),
+                    APP_CONFIG_EDITABLE_KEYS.join("、")
                 );
             }
             let mut results = serde_json::Map::new();
@@ -3078,41 +3073,59 @@ fn interaction_mode_value(value: &Value) -> Result<i64> {
     }
 }
 
-fn render_config_summary(value: &Value) -> String {
-    let mode = value
-        .pointer("/interaction/interaction_mode")
+fn config_show_output(interaction: &Value, prompt: &Value, model: &Value) -> Value {
+    let mode = interaction
+        .pointer("/data/interaction_mode")
         .and_then(Value::as_i64)
         .map(config_view::interact_mode_label)
-        .unwrap_or("unknown");
-    let prompt = value
-        .pointer("/prompt/system_prompt")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let protocol = value
-        .pointer("/model/protocol")
-        .and_then(Value::as_str)
-        .unwrap_or("-");
-    let endpoint = value
-        .pointer("/model/endpoint")
-        .and_then(Value::as_str)
-        .unwrap_or("-");
-    let model = value
-        .pointer("/model/model")
-        .and_then(Value::as_str)
-        .unwrap_or("-");
-    let authorization = if value
-        .pointer("/model/authorization_configured")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        "已配置"
-    } else {
-        "未配置"
+        .map(str::to_owned);
+    let field = |response: &Value, key: &str| {
+        response
+            .get("data")
+            .and_then(|data| data.get(key))
+            .cloned()
+            .unwrap_or(Value::Null)
     };
-    format!(
-        "交互模式: {mode}\n系统提示词: {}\n模型协议: {protocol}\n模型端点: {endpoint}\n模型: {model}\n模型凭据: {authorization}",
-        if prompt.is_empty() { "(默认)" } else { prompt }
-    )
+    let authorization_configured = model
+        .pointer("/data/authorization_configured")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    serde_json::json!({
+        "interaction_mode": mode,
+        "system_prompt": field(prompt, "system_prompt"),
+        "protocol": field(model, "protocol"),
+        "endpoint": field(model, "endpoint"),
+        "model": field(model, "model"),
+        "authorization_configured": authorization_configured,
+        "editable_fields": {
+            "interaction_mode": {
+                "type": "enum",
+                "values": ["oneshot", "full-duplex", "half-duplex"]
+            },
+            "system_prompt": {
+                "type": "string",
+                "max_length": 20000,
+                "empty_restores_default": true
+            },
+            "protocol": {
+                "type": "enum",
+                "values": ["chat_completions"]
+            },
+            "endpoint": {
+                "type": "url",
+                "max_length": 2048
+            },
+            "model": {
+                "type": "string",
+                "max_length": 256
+            },
+            "authorization": {
+                "type": "string",
+                "max_length": 8192,
+                "write_only": true
+            }
+        },
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -3956,6 +3969,40 @@ mod tests {
         );
         assert_eq!(interaction_mode_value(&serde_json::json!(2)).unwrap(), 2);
         assert!(interaction_mode_value(&serde_json::json!(3)).is_err());
+    }
+
+    #[test]
+    fn config_show_output_is_flat_and_describes_editable_fields() {
+        let output = config_show_output(
+            &serde_json::json!({"data": {"interaction_mode": 1}}),
+            &serde_json::json!({"data": {"system_prompt": "你是设备助手"}}),
+            &serde_json::json!({
+                "data": {
+                    "protocol": "chat_completions",
+                    "endpoint": "https://example.com/v1",
+                    "model": "deepseek-chat",
+                    "authorization_configured": true
+                }
+            }),
+        );
+
+        assert_eq!(output["interaction_mode"], "full-duplex");
+        assert_eq!(output["system_prompt"], "你是设备助手");
+        assert_eq!(output["protocol"], "chat_completions");
+        assert_eq!(output["authorization_configured"], true);
+        assert!(output.get("interaction").is_none());
+        assert_eq!(
+            output["editable_fields"]["interaction_mode"]["values"],
+            serde_json::json!(["oneshot", "full-duplex", "half-duplex"])
+        );
+        assert_eq!(
+            output["editable_fields"]["protocol"]["values"],
+            serde_json::json!(["chat_completions"])
+        );
+        assert_eq!(
+            output["editable_fields"]["authorization"]["write_only"],
+            true
+        );
     }
 
     #[test]

@@ -234,6 +234,67 @@ pub fn render_management_capabilities(value: &Value) -> Result<String> {
     Ok(output)
 }
 
+pub fn render_management_config(value: &Value) -> Result<String> {
+    let prompt = value
+        .get("system_prompt")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let rows = vec![
+        vec![
+            "interaction_mode".to_owned(),
+            "交互模式".to_owned(),
+            config_value(value, "interaction_mode"),
+            config_field_constraint(value, "interaction_mode"),
+        ],
+        vec![
+            "system_prompt".to_owned(),
+            "系统提示词".to_owned(),
+            if prompt.is_empty() {
+                "(默认)".to_owned()
+            } else {
+                config_preview(prompt, 32)
+            },
+            config_field_constraint(value, "system_prompt"),
+        ],
+        vec![
+            "protocol".to_owned(),
+            "模型协议".to_owned(),
+            config_value(value, "protocol"),
+            config_field_constraint(value, "protocol"),
+        ],
+        vec![
+            "endpoint".to_owned(),
+            "模型端点".to_owned(),
+            config_preview(&config_value(value, "endpoint"), 36),
+            config_field_constraint(value, "endpoint"),
+        ],
+        vec![
+            "model".to_owned(),
+            "模型".to_owned(),
+            config_value(value, "model"),
+            config_field_constraint(value, "model"),
+        ],
+        vec![
+            "authorization".to_owned(),
+            "模型凭据".to_owned(),
+            if value
+                .get("authorization_configured")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                "已配置（密钥不可读取）".to_owned()
+            } else {
+                "未配置".to_owned()
+            },
+            config_field_constraint(value, "authorization"),
+        ],
+    ];
+    Ok(render_table(
+        &["Key", "配置", "当前值", "可用值/格式"],
+        &rows,
+    ))
+}
+
 pub fn render_management_role_list(value: &Value) -> Result<String> {
     let roles = response_items(value)?;
     if roles.is_empty() {
@@ -538,6 +599,65 @@ fn scalar(value: &Value) -> String {
     }
 }
 
+fn config_value(value: &Value, key: &str) -> String {
+    match value.get(key) {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Null) | None => "-".to_owned(),
+        Some(other) => other.to_string(),
+    }
+}
+
+fn config_preview(value: &str, max_chars: usize) -> String {
+    let single_line = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single_line.chars().count() <= max_chars {
+        return single_line;
+    }
+    let mut preview = single_line.chars().take(max_chars).collect::<String>();
+    preview.push('…');
+    preview
+}
+
+fn config_field_constraint(value: &Value, key: &str) -> String {
+    let Some(field) = value
+        .get("editable_fields")
+        .and_then(|fields| fields.get(key))
+    else {
+        return "-".to_owned();
+    };
+    if let Some(values) = field.get("values").and_then(Value::as_array) {
+        return values
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(" / ");
+    }
+    let kind = match field.get("type").and_then(Value::as_str) {
+        Some("url") => "URL",
+        Some("string") => "文本",
+        Some(other) => other,
+        None => "-",
+    };
+    let mut constraint = kind.to_owned();
+    if let Some(max_length) = field.get("max_length").and_then(Value::as_u64) {
+        constraint.push_str(&format!(" ≤{max_length}"));
+    }
+    if field
+        .get("empty_restores_default")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        constraint.push_str("；空值=默认");
+    }
+    if field
+        .get("write_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        constraint.push_str("；只写");
+    }
+    constraint
+}
+
 fn generic_label(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
@@ -781,5 +901,54 @@ mod tests {
         assert!(output.contains("API 版本: v1"));
         assert!(output.contains("project.agent.model"));
         assert!(!output.contains('{'));
+    }
+
+    #[test]
+    fn renders_management_config_with_editable_fields() {
+        let long_prompt = format!("第一行\n第二行 {}", "很长的系统提示词".repeat(12));
+        let value = json!({
+            "interaction_mode": "full-duplex",
+            "system_prompt": long_prompt.clone(),
+            "protocol": "chat_completions",
+            "endpoint": "https://example.com/v1",
+            "model": "deepseek-chat",
+            "authorization_configured": true,
+            "editable_fields": {
+                "interaction_mode": {
+                    "type": "enum",
+                    "values": ["oneshot", "full-duplex", "half-duplex"]
+                },
+                "system_prompt": {
+                    "type": "string",
+                    "max_length": 20000,
+                    "empty_restores_default": true
+                },
+                "protocol": {
+                    "type": "enum",
+                    "values": ["chat_completions"]
+                },
+                "endpoint": {"type": "url", "max_length": 2048},
+                "model": {"type": "string", "max_length": 256},
+                "authorization": {
+                    "type": "string",
+                    "max_length": 8192,
+                    "write_only": true
+                }
+            }
+        });
+
+        let output = render_management_config(&value).unwrap();
+
+        assert!(output.contains("Key"));
+        assert!(output.contains("interaction_mode"));
+        assert!(output.contains("system_prompt"));
+        assert!(output.contains("authorization"));
+        assert!(output.contains("已配置（密钥不可读取）"));
+        assert!(output.contains("第一行 第二行"));
+        assert!(output.contains('…'));
+        assert!(!output.contains(&long_prompt));
+        assert!(output.contains("oneshot / full-duplex / half-duplex"));
+        assert!(output.contains("chat_completions"));
+        assert!(output.contains("文本 ≤8192；只写"));
     }
 }

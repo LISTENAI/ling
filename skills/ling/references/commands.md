@@ -167,6 +167,11 @@ ling app ota whitelist add <device_id>
 ling app ota whitelist delete <device_id>
 ```
 
+`config show` 默认以表格列出可用于 `config edit --set` 的准确 Key。
+表格同时给出枚举字段的可用值和其他字段的格式约束。
+`config show --json` 输出扁平配置值、凭据配置状态和结构化
+`editable_fields`。
+
 删除、发布和设备命令是否实际调用 API，以 `SKILL.md` 的安全边界为准。
 
 ## 端云请求与日志
