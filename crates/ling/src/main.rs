@@ -280,8 +280,6 @@ enum AppCommand {
     Init(InitArgs),
     /// Bundle the agent project to a single JS file.
     Build(ling_plugin_app_project::BuildArgs),
-    /// Run the agent locally with hot reload and a mock device REPL.
-    Dev,
     /// Preview or upload an agent bundle to the platform.
     Deploy(ling_plugin_app_project::DeployArgs),
     /// Select the managed or a custom Agent version for the app test chain.
@@ -1215,10 +1213,6 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
         AppCommand::Build(args) => {
             let ctx = agent_context(cli)?;
             return ling_plugin_app_project::build_command(&ctx, args).await;
-        }
-        AppCommand::Dev => {
-            let ctx = agent_context(cli)?;
-            return ling_plugin_app_project::dev_command(&ctx).await;
         }
         AppCommand::Deploy(mut args) => {
             args.product_id = explicit_product_id(cli, selector).await?;
@@ -4606,7 +4600,7 @@ mod tests {
 
     #[test]
     fn old_top_level_commands_are_gone() {
-        for cmd in ["models", "chat", "create", "build", "dev", "deploy"] {
+        for cmd in ["models", "chat", "create", "build", "deploy"] {
             assert!(
                 Cli::try_parse_from(["ling", cmd]).is_err(),
                 "`ling {cmd}` should no longer parse"

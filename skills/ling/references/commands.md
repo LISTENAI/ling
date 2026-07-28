@@ -203,7 +203,6 @@ ling app init <agent_name> --product-id <product_id>
 ling app init <agent_name> --no-install
 ling app build
 ling app build --release
-ling app dev
 ling app deploy --version v1.0.0 --dry-run
 ling app deploy --product-id <product_id> \
   --version v1.0.0 --version-name 首次发布 --activate

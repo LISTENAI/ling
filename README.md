@@ -100,7 +100,6 @@ ling app ota --help
 ling app init my-agent --product-id <product_id>
 cd my-agent
 ling app build
-ling app dev
 ```
 
 部署前可以先预览：

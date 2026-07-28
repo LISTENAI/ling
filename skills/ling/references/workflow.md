@@ -105,16 +105,10 @@ ID、可由 CLI 管理的应用。
 
 高危操作遵循原始需求边界：原则上不由 CLI 删除资源，OTA 正式发布/撤销、设备强制白名单切换等也只引导网页操作；删除未正式发布的 OTA 包和维护 OTA 测试白名单是明确例外。`ling app delete` 保留命令入口但绝不调用删除 API。应用级提示链接必须包含已解析的 Project ID：`https://platform.listenai.com/appConfig?id=<project_id>`。
 
-构建与本地调试：
+构建并部署到应用测试链路：
 
 ```bash
 ling app build
-ling app dev
-```
-
-部署：
-
-```bash
 ling app deploy --product-id <product_id> --version <version> --activate
 ```
 
@@ -123,6 +117,8 @@ ling app deploy --product-id <product_id> --version <version> --activate
 ```bash
 ling app deploy --product-id <product_id> --version <version> --dry-run
 ```
+
+部署后使用 `request` 发起一次请求，再用返回的 SID 执行 `trace` 验证行为。
 
 ## 4. 真实设备 PID/SID 切换
 

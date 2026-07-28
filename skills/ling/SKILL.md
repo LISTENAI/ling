@@ -1,6 +1,6 @@
 ---
 name: ling
-description: ListenAI（聆思）平台本地 CLI 工具，覆盖安装与账号登录、模型对话、语音合成/识别（TTS/ASR）、平台应用与知识库管理、端云链路在线调试（request/按 sid trace 请求）、文档中心搜索、真实设备 PID/SID 切换，以及云端 Agent 项目 init/build/dev/deploy（listenai.toml 关联 product_id）和端侧固件/arcs_mini 项目初始化。当用户提到 ling、小聆、聆思、LSPlatform、product_id、listenai.toml、唤醒词、提示语/提示音、发音人、端云调试、sid 查询，或需要在终端中与 ListenAI 平台、Agent 项目或设备配置交互时使用。
+description: ListenAI（聆思）平台本地 CLI 工具，覆盖安装与账号登录、模型对话、语音合成/识别（TTS/ASR）、平台应用与知识库管理、端云链路在线调试（request/按 sid trace 请求）、文档中心搜索、真实设备 PID/SID 切换，以及云端 Agent 项目 init/build/deploy（listenai.toml 关联 product_id）和端侧固件/arcs_mini 项目初始化。当用户提到 ling、小聆、聆思、LSPlatform、product_id、listenai.toml、唤醒词、提示语/提示音、发音人、端云调试、sid 查询，或需要在终端中与 ListenAI 平台、Agent 项目或设备配置交互时使用。
 ---
 
 # ListenAI ling
@@ -106,12 +106,12 @@ adb shell device set_sid <product_secret>
 ling app init <agent_name> --product-id <product_id>
 cd <agent_name>
 ling app build
-ling app dev
 ling app deploy --version <version> --dry-run
 ling app deploy --version <version> --activate
 ```
 
 - `init` 将本地项目与目标应用关联。
+- 自定义 Agent 需要上传并激活测试版本，再通过 `request` 和 `trace` 验证。
 - 部署版本必须为 `X.Y.Z` 或 `vX.Y.Z`，同一 App 下不能重复且必须递增。
 - 正式上传前先用 `--dry-run` 检查目标应用和构建产物。
 - 只有用户要求上传后立即用于应用测试时才加 `--activate`。切换已上传版本用

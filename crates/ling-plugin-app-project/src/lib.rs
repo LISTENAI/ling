@@ -7,6 +7,8 @@ use regex::Regex;
 use reqwest::Url;
 use semver::Version;
 use serde::Deserialize;
+#[cfg(test)]
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
     cmp::Ordering,
     env,
@@ -14,9 +16,9 @@ use std::{
     fs::{self, File},
     io::{self, Cursor, IsTerminal, Write},
     path::{Component, Path, PathBuf},
-    process::{Child, Command, ExitCode, Stdio},
+    process::{Command, ExitCode},
     sync::OnceLock,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 const MAX_DEPLOY_BUNDLE_BYTES: u64 = 10 * 1024 * 1024;
@@ -170,7 +172,7 @@ pub async fn build_command(ctx: &AgentContext, args: BuildArgs) -> Result<ExitCo
     maybe_check_agent_project_version(ctx).await?;
     let entry = default_if_empty(&args.entry, "agent.ts");
     let out = default_if_empty(&args.out, "dist/agent.js");
-    let status = run_esbuild(&entry, &out, args.release, false)?;
+    let status = run_esbuild(&entry, &out, args.release)?;
     if !status.success() {
         return Ok(exit_code(status.code().unwrap_or(1)));
     }
@@ -178,11 +180,6 @@ pub async fn build_command(ctx: &AgentContext, args: BuildArgs) -> Result<ExitCo
     let size = fs::metadata(&out).map(|st| st.len()).unwrap_or(0);
     eprintln!("built {} ({} bytes)", out.display(), size);
     Ok(ExitCode::SUCCESS)
-}
-
-pub async fn dev_command(ctx: &AgentContext) -> Result<ExitCode> {
-    maybe_check_agent_project_version(ctx).await?;
-    run_dev()
 }
 
 pub async fn deploy_command(ctx: &AgentContext, args: DeployArgs) -> Result<ExitCode> {
@@ -750,8 +747,8 @@ fn normalize_scaffolded_project(project_dir: &Path) -> Result<()> {
         .or_insert_with(|| serde_json::json!({}))
         .as_object_mut()
         .ok_or_else(|| anyhow!("generated package.json scripts must be a JSON object"))?;
-    scripts.insert("build".to_string(), serde_json::json!("ling build"));
-    scripts.insert("dev".to_string(), serde_json::json!("ling dev"));
+    scripts.insert("build".to_string(), serde_json::json!("ling app build"));
+    scripts.remove("dev");
 
     let dev_dependencies = object
         .entry("devDependencies")
@@ -822,41 +819,16 @@ fn install_project_deps(project_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_esbuild(
-    entry: &Path,
-    out: &Path,
-    release: bool,
-    watch: bool,
-) -> Result<std::process::ExitStatus> {
+fn run_esbuild(entry: &Path, out: &Path, release: bool) -> Result<std::process::ExitStatus> {
     prepare_build_inputs(entry, out)?;
     let spec = resolve_esbuild_command()?;
-    let args = esbuild_args(entry, out, release, watch)?;
+    let args = esbuild_args(entry, out, release)?;
     let mut command = Command::new(&spec.program);
     set_command_path(&mut command, &spec.program);
     command.args(spec.prefix_args).args(args);
     command.status().with_context(|| {
         format!(
             "failed to run esbuild via {}. Install Node.js/npm, run `npm install`, or set LING_ESBUILD_BIN",
-            spec.program.to_string_lossy()
-        )
-    })
-}
-
-fn spawn_esbuild_watch(entry: &Path, out: &Path) -> Result<Child> {
-    prepare_build_inputs(entry, out)?;
-    let spec = resolve_esbuild_command()?;
-    let args = esbuild_args(entry, out, false, true)?;
-    let mut command = Command::new(&spec.program);
-    set_command_path(&mut command, &spec.program);
-    command
-        .args(spec.prefix_args)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-    command.spawn().with_context(|| {
-        format!(
-            "failed to start esbuild watch via {}. Install Node.js/npm, run `npm install`, or set LING_ESBUILD_BIN",
             spec.program.to_string_lossy()
         )
     })
@@ -934,7 +906,7 @@ fn resolve_esbuild_command() -> Result<CommandSpec> {
     bail!("esbuild not found. Install Node.js/npm and run again, or set LING_ESBUILD_BIN=/path/to/esbuild")
 }
 
-fn esbuild_args(entry: &Path, out: &Path, release: bool, watch: bool) -> Result<Vec<OsString>> {
+fn esbuild_args(entry: &Path, out: &Path, release: bool) -> Result<Vec<OsString>> {
     let sdk = env::current_dir()
         .context("failed to resolve current directory")?
         .join("sdk/src/index.ts");
@@ -952,52 +924,7 @@ fn esbuild_args(entry: &Path, out: &Path, release: bool, watch: bool) -> Result<
     } else {
         args.push(OsString::from("--sourcemap"));
     }
-    if watch {
-        args.push(OsString::from("--watch=forever"));
-    }
     Ok(args)
-}
-
-fn run_dev() -> Result<ExitCode> {
-    let cwd = env::current_dir().context("failed to resolve current directory")?;
-    let entry = cwd.join("agent.ts");
-    if !entry.exists() {
-        bail!(
-            "agent.ts not found in {} - run `ling app init` first",
-            cwd.display()
-        );
-    }
-
-    let node = find_on_path_candidates("node")
-        .ok_or_else(|| anyhow!("node not found. Install Node.js to use `ling app dev`"))?;
-    let tmp = temp_dir("ling-dev")?;
-    let bundle = tmp.join("agent.js");
-    let harness = tmp.join("dev-harness.cjs");
-    fs::write(&harness, DEV_HARNESS)
-        .with_context(|| format!("write dev harness: {}", harness.display()))?;
-
-    let mut watch = spawn_esbuild_watch(&entry, &bundle)?;
-    eprintln!("ling dev: watching {}", entry.display());
-    eprintln!("Type a message and press ENTER to send a mock ASR final frame. Ctrl+C to exit.");
-
-    let status = Command::new(node)
-        .arg(&harness)
-        .arg(&bundle)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .context("failed to run Node.js dev harness")?;
-
-    let _ = watch.kill();
-    let _ = watch.wait();
-    let _ = fs::remove_dir_all(tmp);
-
-    if status.success() {
-        Ok(ExitCode::SUCCESS)
-    } else {
-        Ok(exit_code(status.code().unwrap_or(1)))
-    }
 }
 
 fn resolve_deploy_options(ctx: &AgentContext, args: DeployArgs) -> Result<DeployOptions> {
@@ -1405,6 +1332,7 @@ fn set_command_path(command: &mut Command, program: &OsStr) {
     }
 }
 
+#[cfg(test)]
 fn temp_dir(prefix: &str) -> Result<PathBuf> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1414,144 +1342,6 @@ fn temp_dir(prefix: &str) -> Result<PathBuf> {
     fs::create_dir_all(&dir).with_context(|| format!("create temp dir: {}", dir.display()))?;
     Ok(dir)
 }
-
-const DEV_HARNESS: &str = r#"
-const fs = require('fs');
-const vm = require('vm');
-const readline = require('readline');
-
-const bundle = process.argv[2];
-const sessionId = 'dev-session-1';
-const deviceId = 'mock';
-const productId = 'prod_dev_local';
-let streamSeq = 0;
-const llmStreams = new Map();
-const ttsStreams = new Map();
-const textStreams = new Map();
-const history = new Map();
-const kv = new Map();
-
-function nextId(prefix) { streamSeq += 1; return `${prefix}-${streamSeq}`; }
-function print(prefix, value) {
-  if (typeof value === 'string') console.log(`${prefix}${value}`);
-  else console.log(`${prefix}${JSON.stringify(value)}`);
-}
-function sleep(ms) {
-  const sab = new SharedArrayBuffer(4);
-  Atomics.wait(new Int32Array(sab), 0, 0, Math.max(0, Number(ms) || 0));
-}
-function mockChunks(req) {
-  const last = Array.isArray(req?.messages) ? req.messages[req.messages.length - 1] : null;
-  const text = last?.content ? String(last.content) : 'hello';
-  return [
-    { delta: `mock: ${text} `, done: false },
-    { delta: 'world', done: false },
-    { delta: '', done: true },
-  ];
-}
-function emitPayload(sessionId, payload) {
-  if (payload?.tag === 'text') print('[device] ', payload.val);
-  else print('[device] ', { sessionId, payload });
-}
-
-globalThis.host = {
-  llmChat(req) { const id = nextId('llm'); llmStreams.set(id, mockChunks(req)); return id; },
-  llmPoll(id) { const q = llmStreams.get(id); if (!q) return { delta: '', done: true }; return q.shift() ?? null; },
-  llmSubmitToolResult() {},
-  llmStart(req, handlers = {}) {
-    const id = nextId('llm');
-    for (const chunk of mockChunks(req)) {
-      if (chunk.done) handlers.onDone?.();
-      else handlers.onChunk?.(chunk);
-    }
-    return id;
-  },
-  ttsSynthesize(req) { const id = nextId('tts'); ttsStreams.set(id, [{ audio: new Uint8Array(), codec: 'pcm16le-16k', done: true }]); return id; },
-  ttsPoll(id) { const q = ttsStreams.get(id); if (!q) return { audio: new Uint8Array(), codec: 'pcm16le-16k', done: true }; return q.shift() ?? null; },
-  ttsOpen() { const id = nextId('tts'); ttsStreams.set(id, []); return { id, url: `mock://tts/${id}` }; },
-  ttsSend(id, text) { print('[tts] ', { id, text }); },
-  ttsClose(id) { print('[tts] ', { id, closed: true }); },
-  ttsCloseActive() { print('[tts] ', { closedActive: true }); },
-  textStreamOpen() { const id = nextId('text'); textStreams.set(id, []); return { id, url: `mock://text/${id}` }; },
-  textStreamSend(id, text) { print('[text-stream] ', { id, text }); },
-  textStreamClose(id) { print('[text-stream] ', { id, closed: true }); },
-  textStreamCloseActive() { print('[text-stream] ', { closedActive: true }); },
-  knowledgeQuery(req) { return JSON.stringify({ data: [], query: req?.content ?? '' }); },
-  xiaolingAgentChat(req) { const id = nextId('xiaoling'); llmStreams.set(id, mockChunks(req).map(c => ({ delta: c.delta, answer: c.delta, done: c.done, isStoreChat: false, isAction: false }))); return id; },
-  xiaolingAgentPoll(id) { const q = llmStreams.get(id); if (!q) return { delta: '', answer: '', done: true, isStoreChat: false, isAction: false }; return q.shift() ?? null; },
-  aiuiSkill(req) { return { raw: '', nlp: '', text: req?.text ?? '', accepted: false, rc4: false, unsupportedSkill: true }; },
-  historyGet(sessionId, limit) { const rows = history.get(sessionId) ?? []; return limit ? rows.slice(-limit) : rows.slice(); },
-  historyAppend(sessionId, messages) { const rows = history.get(sessionId) ?? []; history.set(sessionId, rows.concat(messages)); },
-  historyClear(sessionId) { history.delete(sessionId); },
-  kvGet(key) { return kv.has(key) ? kv.get(key) : null; },
-  kvSet(key, value) { kv.set(key, String(value)); },
-  emit: emitPayload,
-  httpRequest(method, url) { print('[http] ', { method, url, skipped: true }); return ''; },
-  log(level, message, fields = {}) { print('[log] ', { level, message, fields }); },
-  httpStream() { return nextId('http-stream'); },
-  httpStreamPoll() { return { status: 200, headers: [], bodyPart: new Uint8Array(), done: true }; },
-  wsConnect(url) { print('[ws] ', { url, skipped: true }); return nextId('ws'); },
-  wsSend() {},
-  wsPoll() { return { tag: 'closed', val: { code: 1000, reason: 'mock' } }; },
-  wsClose() {},
-  sleep,
-};
-
-async function callMaybe(fn, arg) {
-  const out = fn?.(arg);
-  if (out && typeof out.then === 'function') await out;
-}
-async function loadBundle(reason) {
-  try {
-    const code = fs.readFileSync(bundle, 'utf8');
-    delete globalThis.guest;
-    vm.runInThisContext(code, { filename: bundle });
-    if (!globalThis.guest || typeof globalThis.guest.onMessage !== 'function') {
-      throw new Error('agent did not register globalThis.guest.onMessage');
-    }
-    await callMaybe(globalThis.guest.onConnect, {
-      sessionId, deviceId, productId,
-      connectedAt: new Date().toISOString(),
-      isReconnect: reason !== 'initial', reconnectCount: reason === 'initial' ? 0 : 1,
-    });
-    console.log(`reload: ready (${reason})`);
-  } catch (err) {
-    console.error('reload failed:', err && err.stack ? err.stack : err);
-  }
-}
-async function waitForInitialBuild() {
-  while (!fs.existsSync(bundle)) {
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-}
-async function main() {
-  await waitForInitialBuild();
-  await loadBundle('initial');
-  fs.watchFile(bundle, { interval: 250 }, async (cur, prev) => {
-    if (cur.mtimeMs !== prev.mtimeMs) await loadBundle('change');
-  });
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  rl.on('line', async line => {
-    if (line.trim() === '.reload') return loadBundle('manual');
-    try {
-      await callMaybe(globalThis.guest?.onMessage, {
-        sessionId, deviceId, productId,
-        content: { tag: 'text', val: line },
-        isLast: true,
-        params: [],
-        timestampMs: Date.now(),
-      });
-    } catch (err) {
-      console.error('agent error:', err && err.stack ? err.stack : err);
-    }
-  });
-  rl.on('close', () => {
-    fs.unwatchFile(bundle);
-    process.exit(0);
-  });
-}
-main().catch(err => { console.error(err && err.stack ? err.stack : err); process.exitCode = 1; });
-"#;
 
 #[cfg(test)]
 mod tests {
@@ -1579,10 +1369,13 @@ mod tests {
             "0.1.0-mvp.0"
         );
         assert!(project.join("sdk/src/index.ts").is_file());
-        let package = fs::read_to_string(project.join("package.json")).expect("package");
-        assert!(package.contains("ling build"));
-        assert!(package.contains("ling dev"));
-        assert!(package.contains("esbuild"));
+        let package: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(project.join("package.json")).expect("package"),
+        )
+        .expect("package json");
+        assert_eq!(package["scripts"]["build"], "ling app build");
+        assert!(package["scripts"].get("dev").is_none());
+        assert!(package["devDependencies"].get("esbuild").is_some());
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1661,13 +1454,8 @@ mod tests {
         let dir = temp_dir("ling-build-args-test").expect("temp dir");
         let old = env::current_dir().expect("cwd");
         env::set_current_dir(&dir).expect("set cwd");
-        let args = esbuild_args(
-            Path::new("agent.ts"),
-            Path::new("dist/agent.js"),
-            true,
-            false,
-        )
-        .expect("args");
+        let args =
+            esbuild_args(Path::new("agent.ts"), Path::new("dist/agent.js"), true).expect("args");
         env::set_current_dir(old).expect("restore cwd");
 
         let args = args
