@@ -122,21 +122,6 @@ pub fn interact_mode_label(mode: i64) -> &'static str {
     }
 }
 
-pub fn render_interact_mode(value: &Value) -> Result<String> {
-    let config = app_config(value).context("项目详情缺少应用配置")?;
-    let mode = config
-        .get("interaction_mode")
-        .and_then(Value::as_i64)
-        .context("应用配置缺少 interaction_mode 字段")?;
-    let desc = match mode {
-        0 => "单工模式（一次唤醒，一次对话）",
-        1 => "全双工模式（一次唤醒，连续对话，支持打断）",
-        2 => "半双工模式（一次唤醒，连续对话）",
-        _ => "未知模式",
-    };
-    Ok(format!("{}：{}", interact_mode_label(mode), desc))
-}
-
 pub fn render_tone_show(value: &Value) -> Result<String> {
     let config = app_config(value).context("项目详情缺少应用配置")?;
     let tones = config
@@ -528,6 +513,55 @@ pub fn render_management_role_detail(value: &Value) -> Result<String> {
         output.push_str(&render_table(&["名称", "Key", "类型", "可用"], &rows));
         output.push_str(&format!("\n共 {} 个表情资源。", rows.len()));
     }
+    output.push_str("\n\n可编辑字段:\n");
+    output.push_str(&render_table(
+        &["Key", "配置", "可用值/格式"],
+        &[
+            vec![
+                "name".to_owned(),
+                "角色名称".to_owned(),
+                "非空文本 ≤12".to_owned(),
+            ],
+            vec![
+                "description".to_owned(),
+                "角色描述".to_owned(),
+                "文本".to_owned(),
+            ],
+            vec![
+                "persona".to_owned(),
+                "人设".to_owned(),
+                "文本 ≤2000".to_owned(),
+            ],
+            vec![
+                "avatar_url".to_owned(),
+                "头像".to_owned(),
+                "URL ≤2048".to_owned(),
+            ],
+            vec!["vcn".to_owned(), "发音人".to_owned(), "VCN ID".to_owned()],
+            vec!["volume".to_owned(), "音量".to_owned(), "数字".to_owned()],
+            vec!["speed".to_owned(), "语速".to_owned(), "数字".to_owned()],
+            vec![
+                "knowledge".to_owned(),
+                "知识库关联".to_owned(),
+                "JSON 数组".to_owned(),
+            ],
+            vec![
+                "idle_guide.interval_ms".to_owned(),
+                "闲时引导间隔".to_owned(),
+                "数字（毫秒）".to_owned(),
+            ],
+            vec![
+                "idle_guide.resources".to_owned(),
+                "闲时引导文案".to_owned(),
+                "JSON 数组 ≤10".to_owned(),
+            ],
+            vec![
+                "default_wakeup_word_id".to_owned(),
+                "默认唤醒词".to_owned(),
+                "唤醒词 ID".to_owned(),
+            ],
+        ],
+    ));
     Ok(output)
 }
 
@@ -607,12 +641,13 @@ pub fn render_management_tones(value: &Value) -> Result<String> {
 pub fn render_management_mcps(value: &Value) -> Result<String> {
     render_resource_list(
         value,
-        &["名称", "Server ID", "启用", "类型", "状态", "工具数"],
+        &["名称", "ID", "Server ID", "启用", "类型", "状态", "工具数"],
         "MCP 服务器",
         |item| {
             vec![
                 field(item, "name"),
-                first_field(item, &["server_id", "id"]),
+                field(item, "id"),
+                field(item, "server_id"),
                 yes_no(bool_field(Some(item), "enabled")),
                 if bool_field(Some(item), "built_in") {
                     "内置".to_owned()
@@ -624,6 +659,136 @@ pub fn render_management_mcps(value: &Value) -> Result<String> {
             ]
         },
     )
+}
+
+pub fn render_management_mcp_detail(value: &Value) -> Result<String> {
+    let mcp = response_data(value)?;
+    let built_in = bool_field(Some(mcp), "built_in");
+    let authorization_configured = mcp
+        .get("authorization")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.is_empty())
+        || mcp
+            .get("authorization_configured")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    let mut output = [
+        ("名称", field(mcp, "name")),
+        ("ID", field(mcp, "id")),
+        ("Server ID", field(mcp, "server_id")),
+        ("类型", if built_in { "内置" } else { "外部" }.to_owned()),
+        ("启用", yes_no(bool_field(Some(mcp), "enabled"))),
+        ("传输协议", field(mcp, "transport_type")),
+        ("URL", field(mcp, "url")),
+        ("描述", field(mcp, "description")),
+        (
+            "Authorization",
+            if authorization_configured {
+                "已配置（密钥不可读取）".to_owned()
+            } else {
+                "未配置".to_owned()
+            },
+        ),
+        ("工具状态", field(mcp, "tool_status")),
+        ("上次检查", field(mcp, "tool_last_checked_at")),
+    ]
+    .into_iter()
+    .map(|(label, value)| format!("{label}: {value}"))
+    .collect::<Vec<_>>()
+    .join("\n");
+
+    let tools = mcp
+        .get("tools")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if tools.is_empty() {
+        output.push_str("\n\n工具: 无");
+    } else {
+        let rows = tools
+            .iter()
+            .map(|tool| {
+                vec![
+                    first_field(tool, &["name", "tool_name"]),
+                    config_preview(&field(tool, "description"), 48),
+                ]
+            })
+            .collect::<Vec<_>>();
+        output.push_str("\n\n工具:\n");
+        output.push_str(&render_table(&["名称", "描述"], &rows));
+    }
+
+    output.push_str("\n\n可编辑字段:\n");
+    let mut rows = vec![vec![
+        "enabled".to_owned(),
+        "启用状态".to_owned(),
+        "true / false".to_owned(),
+    ]];
+    if !built_in {
+        rows.splice(
+            0..0,
+            [
+                vec![
+                    "name".to_owned(),
+                    "显示名称".to_owned(),
+                    "非空文本 ≤20".to_owned(),
+                ],
+                vec![
+                    "server_id".to_owned(),
+                    "服务标识".to_owned(),
+                    "[A-Za-z0-9_-]，1–20 字符".to_owned(),
+                ],
+                vec![
+                    "transport_type".to_owned(),
+                    "传输协议".to_owned(),
+                    "sse / http".to_owned(),
+                ],
+                vec![
+                    "url".to_owned(),
+                    "服务地址".to_owned(),
+                    "URL ≤1000".to_owned(),
+                ],
+                vec![
+                    "description".to_owned(),
+                    "描述".to_owned(),
+                    "文本".to_owned(),
+                ],
+                vec![
+                    "authorization".to_owned(),
+                    "鉴权信息".to_owned(),
+                    "文本 ≤500；只写".to_owned(),
+                ],
+            ],
+        );
+    }
+    output.push_str(&render_table(&["Key", "配置", "可用值/格式"], &rows));
+    Ok(output)
+}
+
+pub fn redact_mcp_credentials(value: &Value) -> Value {
+    let mut value = value.clone();
+    let redact = |item: &mut Value| {
+        let Some(object) = item.as_object_mut() else {
+            return;
+        };
+        let configured = object
+            .remove("authorization")
+            .and_then(|value| value.as_str().map(|value| !value.is_empty()))
+            .unwrap_or(false);
+        if configured {
+            object.insert("authorization_configured".to_owned(), Value::Bool(true));
+        }
+    };
+    match value.get_mut("data") {
+        Some(Value::Array(items)) => {
+            for item in items {
+                redact(item);
+            }
+        }
+        Some(item) => redact(item),
+        None => redact(&mut value),
+    }
+    value
 }
 
 fn render_resource_list<F>(value: &Value, headers: &[&str], noun: &str, row: F) -> Result<String>
@@ -847,13 +1012,6 @@ mod tests {
     }
 
     #[test]
-    fn renders_interact_mode() {
-        let out = render_interact_mode(&sample_project()).unwrap();
-        assert!(out.contains("full-duplex"));
-        assert!(out.contains("全双工"));
-    }
-
-    #[test]
     fn renders_lexicon_mixed_shapes() {
         let out = render_lexicon_list(&sample_project()).unwrap();
         assert!(out.contains("聆思"));
@@ -941,6 +1099,9 @@ mod tests {
         assert!(output.contains("唤醒词:"));
         assert!(output.contains("闲时引导（间隔 3000 ms）"));
         assert!(output.contains("表情资源:"));
+        assert!(output.contains("可编辑字段:"));
+        assert!(output.contains("default_wakeup_word_id"));
+        assert!(output.contains("idle_guide.resources"));
         assert!(!output.contains("\"persona\""));
     }
 
@@ -962,6 +1123,7 @@ mod tests {
         });
         let mcp = json!({
             "data": [{
+                "id": "mcp-record-1",
                 "name": "天气查询工具",
                 "server_id": "weather",
                 "enabled": true,
@@ -979,6 +1141,44 @@ mod tests {
         assert!(render_management_mcps(&mcp)
             .unwrap()
             .contains("天气查询工具"));
+        assert!(render_management_mcps(&mcp)
+            .unwrap()
+            .contains("mcp-record-1"));
+    }
+
+    #[test]
+    fn renders_mcp_detail_and_redacts_authorization() {
+        let value = json!({
+            "data": {
+                "id": "mcp-record-1",
+                "name": "天气查询工具",
+                "server_id": "weather",
+                "enabled": true,
+                "built_in": false,
+                "transport_type": "http",
+                "url": "https://mcp.example.com",
+                "description": "查询天气",
+                "authorization": "Bearer secret-token",
+                "tool_status": "ready",
+                "tools": [{
+                    "name": "get_weather",
+                    "description": "按城市查询天气"
+                }]
+            }
+        });
+
+        let output = render_management_mcp_detail(&value).unwrap();
+        assert!(output.contains("ID: mcp-record-1"));
+        assert!(output.contains("get_weather"));
+        assert!(output.contains("authorization"));
+        assert!(output.contains("文本 ≤500；只写"));
+        assert!(output.contains("已配置（密钥不可读取）"));
+        assert!(!output.contains("secret-token"));
+
+        let redacted = redact_mcp_credentials(&value);
+        assert!(redacted["data"].get("authorization").is_none());
+        assert_eq!(redacted["data"]["authorization_configured"], true);
+        assert!(!redacted.to_string().contains("secret-token"));
     }
 
     #[test]

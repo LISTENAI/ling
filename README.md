@@ -89,6 +89,7 @@ ASR 音频应为 16kHz、16bit LE、单声道 PCM；WAV 会自动校验格式。
 
 ```bash
 ling app list
+ling app create 新应用 --description "应用说明"
 ling app inspect <product_id>
 ling app inspect <product_id> --json
 ling app --product-id <product_id> config show

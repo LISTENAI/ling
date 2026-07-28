@@ -26,9 +26,8 @@ pub async fn create_project(
     api_key: &str,
     name: &str,
     description: Option<&str>,
-    template_id: u64,
 ) -> Result<Value> {
-    let mut body = json!({"name": name, "template_id": template_id});
+    let mut body = json!({"name": name});
     if let Some(description) = description {
         body["description"] = Value::String(description.to_owned());
     }

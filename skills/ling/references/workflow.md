@@ -1,28 +1,27 @@
 # ListenAI ling 标准工作流
 
-本文件面向公开用户环境。不要写本机绝对路径、个人目录或内部测试工程。
+本文件面向公开用户环境。
 
 ## 目录
 
 - [CLI 检测与安装](#0-cli-检测与安装)
 - [登录与状态确认](#1-登录与状态确认)
-- [开发前方案确认](#2-开发前方案确认)
-- [云端 Agent 工作流](#3-云端-agent-工作流)
-- [真实设备 PID/SID 切换](#4-真实设备-pidsid-切换)
-- [端侧固件工作流](#5-端侧固件工作流)
+- [任务分流与方案确认](#2-任务分流与方案确认)
+- [平台操作](#3-平台操作)
+- [自定义 Agent 工作流](#4-自定义-agent-工作流)
+- [真实设备 PID/SID 切换](#5-真实设备-pidsid-切换)
+- [端侧任务转交](#6-端侧任务转交)
 
 ## 0. CLI 检测与安装
 
-先检测当前环境，不要根据目录或历史对话猜测：
+本 Skill 要求 `ling >= 0.2.0`。先运行：
 
 ```bash
 ling --version
 ```
 
-命令成功时继续使用当前版本。除非用户明确要求更新，否则不要重装。
-
-命令不存在或无法执行时，先说明将从 `LISTENAI/ling` 的 GitHub Release
-下载适配当前系统的官方二进制，再按平台执行：
+版本满足要求时继续使用。版本过低、命令不存在或无法执行时，说明将从
+`LISTENAI/ling` 的 GitHub Release 安装官方二进制，再按平台执行。
 
 macOS / Linux：
 
@@ -36,137 +35,116 @@ Windows PowerShell：
 irm https://raw.githubusercontent.com/LISTENAI/ling/main/install.ps1 | iex
 ```
 
-安装属于联网和用户目录写入操作，使用运行环境提供的授权机制。Agent 能执行
-时直接完成，不要让用户代为复制命令。不要为了安装 CLI 克隆仓库、运行
-`cargo install` 或构建开发版本。
-
-安装后验证：
+macOS 也可使用：
 
 ```bash
-ling --version
+brew install LISTENAI/tap/ling
 ```
 
-macOS / Linux 安装器默认写入 `$HOME/.local/bin/ling`；Windows 默认写入
-`$HOME/bin/ling.exe`。如果当前 shell 尚未刷新 PATH，先用该绝对路径验证。
-不要擅自修改 shell 配置文件；向用户说明安装器给出的 PATH 提示即可。
+安装需要联网并写入用户目录，使用运行环境提供的授权机制。Agent 能执行时
+直接完成，不要只把命令交给用户。不要克隆源码仓库、运行 `cargo install`
+或自行构建开发版本。
+
+安装后再次运行 `ling --version`。当前 shell 尚未刷新 PATH 时，使用安装器
+返回的二进制路径验证；不要擅自修改用户的 shell 配置。
 
 ## 1. 登录与状态确认
 
-1. 如果用户未登录，提示用户打开 `https://platform.listenai.com/keys` 获取
-   API Key。
-2. 运行登录命令，让用户在交互提示中粘贴 API Key：
+1. 用户未登录时，请其打开 `https://platform.listenai.com/keys` 获取 API Key。
+2. 运行 `ling login`，由用户本人在交互提示中输入密钥。
+3. 运行 `ling account` 验证账号。
 
-   ```bash
-   ling login
-   ```
+不要要求用户把完整 API Key 粘贴到对话、日志或截图中。
 
-3. 登录后验证账号：
+## 2. 任务分流与方案确认
 
-   ```bash
-   ling account
-   ```
+先判断满足需求所需的最小路径：
 
-4. 告诉用户下一步可以执行：`ling ai models`、`ling app list`、
-   `ling app init <agent_name> --product-id <product_id>`、或设备 PID/SID
-   切换流程。
+- 基础 AI 或平台配置：直接使用对应的 `ling ai`、`ling app` 或 `ling kb`
+  命令。
+- 模拟请求和日志回查：使用 `request/trace`。
+- 真实设备只需切换应用：使用 PID/SID 配置流程，不进入代码开发。
+- 自定义云端逻辑：进入 Agent 项目流程。
+- 固件源码、编译或烧录：转交专用端侧 Skill。
 
-不要在回复、日志或截图中展示完整 API Key。
+在初始化项目、修改代码、构建、部署、拉取端侧仓库、编译或烧录前，先向用户
+说明选择的路径、将操作的对象和验收方式，并等待确认。这项确认用于防止把
+简单的平台或设备配置需求扩大成不必要的云端、端侧开发。
 
-## 2. 开发前方案确认
+普通查询、用户已经指定的应用配置操作、`request/trace` 和 PID/SID 配置不应
+因此自动触发代码拉取或构建。
 
-在执行以下动作前，先输出方案并等待用户确认：创建项目、修改代码、构建、部署、拉仓库、写设备配置。
+## 3. 平台操作
 
-方案包含：
+目标应用按以下顺序确定：
 
-- 需求理解
-- 选择的链路：云端 Agent、设备 PID/SID 切换、端侧固件
-- 将执行的命令
-- 会修改或访问的对象
-- 验收方式
-- 敏感信息处理方式
+1. 用户显式给出的 Product ID、Project ID 或 App ID；
+2. 当前目录 `listenai.toml` 中的 `product_id`；
+3. 运行 `ling app list` 后由用户确认。
 
-如果用户需求已明确，可以复述判断并给方案；如果缺少 Product ID、Agent 名称、目标设备等关键信息，先提一个必要问题。
+不要替用户猜目标应用。应用、角色、MCP、知识库、文档和专业词汇删除，以及
+OTA 正式发布/撤销、设备列表和强制白名单切换，只使用 CLI 返回的网页入口。
 
-## 3. 云端 Agent 工作流
+`tone` 操作的是合成提示音所使用的文案，不是音频文件。
 
-新建项目：
+## 4. 自定义 Agent 工作流
+
+用户确认进入自定义 Agent 开发后：
 
 ```bash
-ling app list
-ling app init <agent_name> --product-id <product_id>
+ling app --product-id <product_id> init <agent_name>
 cd <agent_name>
-```
-
-`ling app init` 会把目标应用写入项目根目录的 `listenai.toml`。如果用户尚未确定应用，先用 `ling app list` 查询；不要替用户猜测 `<product_id>`。
-
-应用定位默认使用 Product ID。也可以显式传 `--project-id <project_id>` 或
-`--app-id <app_id>`；三种 ID 参数互斥。`ling app list` 只展示已关联 Product
-ID、可由 CLI 管理的应用。
-
-高危操作遵循原始需求边界：原则上不由 CLI 删除资源，OTA 正式发布/撤销、设备强制白名单切换等也只引导网页操作；删除未正式发布的 OTA 包和维护 OTA 测试白名单是明确例外。`ling app delete` 保留命令入口但绝不调用删除 API。应用级提示链接必须包含已解析的 Project ID：`https://platform.listenai.com/appConfig?id=<project_id>`。
-
-构建并部署到应用测试链路：
-
-```bash
 ling app build
-ling app deploy --product-id <product_id> --version <version> --activate
+ling app deploy --version <version> --dry-run
 ```
 
-可先 dry-run：
+确认预览正确后，部署并激活应用测试链路：
 
 ```bash
-ling app deploy --product-id <product_id> --version <version> --dry-run
+ling app deploy --version <version> --activate
 ```
 
-部署后使用 `request` 发起一次请求，再用返回的 SID 执行 `trace` 验证行为。
+不激活时只能完成构建、预览或上传，普通 `request` 无法定向调用某个未激活
+版本。要验证自定义实现，必须先使该版本成为应用当前测试链路：
 
-## 4. 真实设备 PID/SID 切换
+```bash
+ling app chain show
+ling app --product-id <product_id> request --text <text>
+ling app trace <sid>
+```
 
-用于“切设备 PID”“切应用”“换设备绑定”等需求。此流程不需要拉端侧仓库，不需要编译固件。
+默认先阅读人类可读时间线；需要逐事件排查时再使用 `--verbose`，需要机器可读
+记录时使用 `--json`。
 
-1. 用 `ling app list` 确认目标 `<product_id>`；不要替用户猜测应用。
-2. 明确请用户本人前往平台网页的应用详情查看产品密钥。Agent 不得要求用户把 Secret 粘贴到对话、日志或截图中，也不得代替用户保存它。
-3. 如需发起端云链路模拟请求，让用户在自己的终端执行：
+## 5. 真实设备 PID/SID 切换
 
-   ```bash
-   ling app --product-id <product_id> request --product-secret '<product_secret>' --text <text>
-   ```
+用于“切设备 PID”“切应用”“换设备绑定”等需求。此流程不需要拉取或编译
+任何代码仓库。
 
-   也可以临时设置 `LING_PRODUCT_SECRET`，避免 Secret 进入 shell 历史。
-   默认输出带方向的双向事件摘要；逐事件诊断使用 `--verbose`，保存语音使用
-   `--output-tts <FILE>`。完整输出约定见
-   [命令参考](commands.md#端云请求与日志)。
-   请求汇总和鉴权错误会显示 CLI 使用的 Device ID。默认不要传
-   `--device-id` 或 `--llm-app`。如果鉴权返回 `20105`，先询问用户是否授权
-   将错误中显示的 Device ID 导入当前应用；明确同意后才执行：
-
-   ```bash
-   ling app --product-id <product_id> device add <device_id>
-   ```
-
-   导入设备不代表允许 Agent 开启或关闭强制白名单。
-4. 绑定真实设备时，将 Product ID 作为 PID，将产品密钥作为 SID，由用户在自己的终端写入。交互式：
-
-   ```bash
-   adb shell
-   device set_pid <product_id>
-   device set_sid <product_secret>
-   ```
-
-   或非交互式：
+1. 按目标应用选择规则确认 Product ID。
+2. 让用户在自己的终端准备设备 SID，不要要求其把敏感值粘贴到对话中。
+3. 由用户在自己的终端写入：
 
    ```bash
    adb shell device set_pid <product_id>
-   adb shell device set_sid <product_secret>
+   adb shell device set_sid <sid>
    ```
 
-5. 让用户重新唤醒或重连设备，验证新产品配置生效。
+4. 重新唤醒或重连设备，验证应用配置生效。
 
-安全要求：不要把 `<product_secret>` / SID 明文写入公开回复、日志或截图；如需说明，只展示脱敏形式。
+如果需求只是模拟设备请求，不执行上述设备写入，直接使用：
 
-## 5. 端侧固件工作流
+```bash
+ling app --product-id <product_id> request --text <text>
+```
 
-只有用户明确要求固件源码、SDK、开发板编译、烧录、`arcs_mini` 相关开发时，才进入端侧仓库流程。
+## 6. 端侧任务转交
 
-单纯的 PID/SID 切换、应用切换、设备绑定切换，一律使用第 4 节的平台
-Product Secret + `adb shell device set_pid/set_sid` 流程。
+涉及固件源码、SDK、开发板、编译或烧录时：
+
+1. 使用当前 Agent 环境提供的 Skill 发现能力，搜索与目标芯片、开发板和任务
+   匹配的端侧开发或烧录 Skill。
+2. 找到后读取并遵循该 Skill，再向用户说明端侧方案并等待确认。
+3. 找不到时明确告知缺少专用端侧能力，并协助用户查找或安装合适的 Skill。
+
+没有专用 Skill 时，不要猜测仓库地址、工具链、构建参数、串口或烧录命令。

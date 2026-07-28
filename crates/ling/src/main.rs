@@ -58,7 +58,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Basic AI abilities: models, chat, TTS, ASR, wakeword.
+    /// Basic AI abilities: models, chat, TTS, and ASR.
     Ai(AiArgs),
     /// Platform app management and local agent project workflow.
     App(AppArgs),
@@ -103,6 +103,7 @@ enum AiCommand {
     /// Recognize speech from a PCM/WAV file (wss /v2/asr).
     Asr(AsrArgs),
     /// Generate a wakeword resource (ROMFS bin).
+    #[command(hide = true)]
     Wakeword(WakewordArgs),
 }
 
@@ -281,9 +282,6 @@ enum AppCommand {
         /// Application scenario description.
         #[arg(long)]
         description: Option<String>,
-        /// Initial application template id.
-        #[arg(long = "template-id")]
-        template_id: u64,
         /// Print the raw JSON response.
         #[arg(long)]
         json: bool,
@@ -329,16 +327,6 @@ enum AppCommand {
     Ota(OtaArgs),
     /// Role management.
     Role(RoleArgs),
-    /// Get or set the default wake interaction mode.
-    #[command(name = "interact-mode")]
-    InteractMode {
-        /// Target mode. Omit to show the current mode.
-        #[arg(value_parser = ["oneshot", "half-duplex", "full-duplex"])]
-        mode: Option<String>,
-        /// Print the raw JSON response.
-        #[arg(long)]
-        json: bool,
-    },
     /// App-linked knowledge bases.
     Kb(AppKbArgs),
     /// Domain lexicon (hotwords) management.
@@ -464,7 +452,7 @@ enum OtaCommand {
         json: bool,
     },
     /// Show an OTA package.
-    Get {
+    Show {
         package_id: String,
         #[arg(long)]
         json: bool,
@@ -554,8 +542,8 @@ enum RoleCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Add a role.
-    Add {
+    /// Create a role.
+    Create {
         name: String,
         #[command(flatten)]
         input: JsonEditArgs,
@@ -755,7 +743,13 @@ enum McpCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Add an MCP server.
+    /// Show the complete configuration of one MCP server.
+    Show {
+        mcp_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Add an existing MCP server to the app.
     Add {
         name: String,
         #[arg(long = "server-id")]
@@ -775,23 +769,23 @@ enum McpCommand {
     },
     /// Edit an MCP server.
     Edit {
-        server_id: String,
+        mcp_id: String,
         #[command(flatten)]
         input: JsonEditArgs,
         #[arg(long)]
         json: bool,
     },
     /// Show the web page for deleting an MCP server.
-    Delete { server_id: String },
+    Delete { mcp_id: String },
     /// Enable an MCP server.
     Enable {
-        server_id: String,
+        mcp_id: String,
         #[arg(long)]
         json: bool,
     },
     /// Disable an MCP server.
     Disable {
-        server_id: String,
+        mcp_id: String,
         #[arg(long)]
         json: bool,
     },
@@ -1197,6 +1191,7 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
             service_type,
             json,
         } => {
+            ensure_no_app_selector(&selector, "list")?;
             let api_key = resolve_api_key()?;
             let output = ling_plugin_app::list_product_projects(
                 &cli.api_base_url,
@@ -1215,16 +1210,15 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
         AppCommand::Create {
             name,
             description,
-            template_id,
             json,
         } => {
+            ensure_no_app_selector(&selector, "create")?;
             let api_key = resolve_api_key()?;
             let output = management::create_project(
                 &cli.api_base_url,
                 &api_key,
                 &name,
                 description.as_deref(),
-                template_id,
             )
             .await?;
             if json {
@@ -1238,6 +1232,7 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
             return init_command(cli, args, product_id).await;
         }
         AppCommand::Build(args) => {
+            ensure_no_app_selector(&selector, "build")?;
             let ctx = agent_context(cli)?;
             return ling_plugin_app_project::build_command(&ctx, args).await;
         }
@@ -1290,13 +1285,13 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
             hours,
             verbose,
             json,
-        } => trace_command(cli, &sid, hours, verbose, json).await?,
+        } => {
+            ensure_no_app_selector(&selector, "trace")?;
+            trace_command(cli, &sid, hours, verbose, json).await?
+        }
         AppCommand::Device(args) => device_command(cli, args, selector).await?,
         AppCommand::Ota(args) => ota_command(cli, args, selector).await?,
         AppCommand::Role(args) => role_command(cli, args, selector).await?,
-        AppCommand::InteractMode { mode, json } => {
-            interact_mode_command(cli, selector, mode, json).await?
-        }
         AppCommand::Kb(args) => app_kb_command(cli, args, selector).await?,
         AppCommand::Lexicon(args) => lexicon_command(cli, args, selector).await?,
         AppCommand::Tone(args) => tone_command(cli, args, selector).await?,
@@ -1872,7 +1867,7 @@ async fn role_command(cli: &Ctx, args: RoleArgs, selector: AppSelector) -> Resul
                 Ok(())
             }
         }
-        RoleCommand::Add { name, input, json } => {
+        RoleCommand::Create { name, input, json } => {
             let mut body = json_body_from_input(input, role_edit_key)?;
             body.as_object_mut()
                 .context("角色请求必须是 JSON 对象")?
@@ -1991,7 +1986,7 @@ async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<
                 Ok(())
             }
         }
-        OtaCommand::Get { package_id, json } => {
+        OtaCommand::Show { package_id, json } => {
             let items = management::list_all_resource(
                 &cli.api_base_url,
                 &app.api_key,
@@ -2150,52 +2145,6 @@ async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<
                 print_action_or_json(&output, json, "OTA 白名单设备删除成功")
             }
         },
-    }
-}
-
-async fn interact_mode_command(
-    cli: &Ctx,
-    selector: AppSelector,
-    mode: Option<String>,
-    json: bool,
-) -> Result<()> {
-    let app = resolve_app(cli, selector).await?;
-    let output = match mode {
-        None => {
-            management::get_resource(
-                &cli.api_base_url,
-                &app.api_key,
-                &app.project_id,
-                &["interaction-mode"],
-            )
-            .await?
-        }
-        Some(mode) => {
-            let value = match mode.as_str() {
-                "oneshot" => 0,
-                "full-duplex" => 1,
-                "half-duplex" => 2,
-                _ => unreachable!("clap validates interaction mode"),
-            };
-            management::update_resource(
-                &cli.api_base_url,
-                &app.api_key,
-                &app.project_id,
-                &["interaction-mode"],
-                serde_json::json!({"interaction_mode": value}),
-            )
-            .await?
-        }
-    };
-    if json {
-        print_json(&output)
-    } else {
-        let value = output
-            .pointer("/data/interaction_mode")
-            .and_then(Value::as_i64)
-            .context("交互模式响应缺少 data.interaction_mode")?;
-        println!("{}", config_view::interact_mode_label(value));
-        Ok(())
     }
 }
 
@@ -2875,9 +2824,29 @@ async fn mcp_command(cli: &Ctx, args: McpArgs, selector: AppSelector) -> Result<
             )
             .await?;
             if json {
-                print_json(&output)
+                print_json(&config_view::redact_mcp_credentials(&output))
             } else {
                 println!("{}", config_view::render_management_mcps(&output)?);
+                Ok(())
+            }
+        }
+        McpCommand::Show { mcp_id, json } => {
+            let items = management::list_all_resource(
+                &cli.api_base_url,
+                &api_key,
+                &project_id,
+                &["mcp-servers"],
+            )
+            .await?;
+            let item = items
+                .into_iter()
+                .find(|item| item.get("id").and_then(Value::as_str) == Some(mcp_id.as_str()))
+                .with_context(|| format!("未找到 ID 为 {mcp_id} 的 MCP 服务器"))?;
+            let output = serde_json::json!({"data": item});
+            if json {
+                print_json(&config_view::redact_mcp_credentials(&output))
+            } else {
+                println!("{}", config_view::render_management_mcp_detail(&output)?);
                 Ok(())
             }
         }
@@ -2912,10 +2881,10 @@ async fn mcp_command(cli: &Ctx, args: McpArgs, selector: AppSelector) -> Result<
                 body,
             )
             .await?;
-            print_action_or_json(&output, json, "MCP 服务器添加成功")
+            print_action_or_json(&output, json, "MCP 服务器已添加")
         }
         McpCommand::Edit {
-            server_id,
+            mcp_id,
             input,
             json,
         } => {
@@ -2925,36 +2894,36 @@ async fn mcp_command(cli: &Ctx, args: McpArgs, selector: AppSelector) -> Result<
                 &cli.api_base_url,
                 &api_key,
                 &project_id,
-                &["mcp-servers", &server_id],
+                &["mcp-servers", &mcp_id],
                 body,
             )
             .await?;
             print_action_or_json(&output, json, "MCP 服务器更新成功")
         }
-        McpCommand::Enable { server_id, json } => {
+        McpCommand::Enable { mcp_id, json } => {
             let output = management::update_resource(
                 &cli.api_base_url,
                 &api_key,
                 &project_id,
-                &["mcp-servers", &server_id],
+                &["mcp-servers", &mcp_id],
                 serde_json::json!({"enabled": true}),
             )
             .await?;
             print_action_or_json(&output, json, "MCP 服务器已启用")
         }
-        McpCommand::Disable { server_id, json } => {
+        McpCommand::Disable { mcp_id, json } => {
             let output = management::update_resource(
                 &cli.api_base_url,
                 &api_key,
                 &project_id,
-                &["mcp-servers", &server_id],
+                &["mcp-servers", &mcp_id],
                 serde_json::json!({"enabled": false}),
             )
             .await?;
             print_action_or_json(&output, json, "MCP 服务器已停用")
         }
-        McpCommand::Delete { server_id } => Err(app_config_only_operation(
-            &format!("删除 MCP 服务器 {server_id}"),
+        McpCommand::Delete { mcp_id } => Err(app_config_only_operation(
+            &format!("删除 MCP 服务器 {mcp_id}"),
             &project_id,
         )),
     }
@@ -3377,6 +3346,15 @@ impl AppSelector {
     }
 }
 
+fn ensure_no_app_selector(selector: &AppSelector, command: &str) -> Result<()> {
+    if selector.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "`ling app {command}` 不针对单个应用，不能传 --product-id、--project-id 或 --app-id"
+    )
+}
+
 async fn explicit_product_id(cli: &Ctx, selector: AppSelector) -> Result<Option<String>> {
     if let Some(product_id) = clean_identifier(selector.product_id.clone()) {
         return Ok(Some(product_id));
@@ -3751,8 +3729,6 @@ mod tests {
             "app",
             "create",
             "Demo",
-            "--template-id",
-            "12",
             "--description",
             "Voice app",
             "--json",
@@ -3764,12 +3740,10 @@ mod tests {
                 AppCommand::Create {
                     name,
                     description,
-                    template_id,
                     json,
                 } => {
                     assert_eq!(name, "Demo");
                     assert_eq!(description.as_deref(), Some("Voice app"));
-                    assert_eq!(template_id, 12);
                     assert!(json);
                 }
                 other => panic!("expected app create command, got {other:?}"),
@@ -3889,17 +3863,12 @@ mod tests {
 
     #[test]
     fn app_create_rejects_the_unreachable_mode_option() {
-        let err = Cli::try_parse_from([
-            "ling",
-            "app",
-            "create",
-            "Demo",
-            "--template-id",
-            "12",
-            "--mode",
-            "custom",
-        ])
-        .expect_err("create mode is not a reachable server state");
+        let err = Cli::try_parse_from(["ling", "app", "create", "Demo", "--mode", "custom"])
+            .expect_err("create mode is not a reachable server state");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+
+        let err = Cli::try_parse_from(["ling", "app", "create", "Demo", "--template-id", "12"])
+            .expect_err("template selection is no longer part of app creation");
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
@@ -4059,6 +4028,73 @@ mod tests {
                 other => panic!("expected lexicon import command, got {other:?}"),
             },
             other => panic!("expected app command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_consistent_resource_verbs() {
+        assert!(matches!(
+            Cli::try_parse_from(["ling", "app", "role", "create", "助手"])
+                .expect("parse role create")
+                .command,
+            Command::App(AppArgs {
+                command: AppCommand::Role(RoleArgs {
+                    command: RoleCommand::Create { .. }
+                }),
+                ..
+            })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["ling", "app", "mcp", "show", "mcp-record-1", "--json"])
+                .expect("parse mcp show")
+                .command,
+            Command::App(AppArgs {
+                command: AppCommand::Mcp(McpArgs {
+                    command: McpCommand::Show { .. }
+                }),
+                ..
+            })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "ling",
+                "app",
+                "mcp",
+                "add",
+                "天气服务",
+                "--server-id",
+                "weather",
+                "--transport",
+                "http",
+                "--url",
+                "https://mcp.example.com"
+            ])
+            .expect("parse mcp add")
+            .command,
+            Command::App(AppArgs {
+                command: AppCommand::Mcp(McpArgs {
+                    command: McpCommand::Add { .. }
+                }),
+                ..
+            })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["ling", "app", "ota", "show", "ota-1"])
+                .expect("parse ota show")
+                .command,
+            Command::App(AppArgs {
+                command: AppCommand::Ota(OtaArgs {
+                    command: OtaCommand::Show { .. }
+                }),
+                ..
+            })
+        ));
+        for removed in [
+            ["ling", "app", "role", "add", "助手"].as_slice(),
+            ["ling", "app", "mcp", "create", "天气服务"].as_slice(),
+            ["ling", "app", "ota", "get", "ota-1"].as_slice(),
+        ] {
+            assert!(Cli::try_parse_from(removed).is_err());
         }
     }
 
@@ -4814,21 +4850,17 @@ mod tests {
     }
 
     #[test]
-    fn parses_interact_mode_values() {
-        for mode in ["oneshot", "half-duplex", "full-duplex"] {
-            let cli = Cli::try_parse_from(["ling", "app", "interact-mode", mode])
-                .expect("parse interact-mode");
-            match cli.command {
-                Command::App(app) => match app.command {
-                    AppCommand::InteractMode { mode: parsed, .. } => {
-                        assert_eq!(parsed.as_deref(), Some(mode));
-                    }
-                    other => panic!("expected interact-mode command, got {other:?}"),
-                },
-                other => panic!("expected app command, got {other:?}"),
-            }
-        }
-        assert!(Cli::try_parse_from(["ling", "app", "interact-mode", "bogus"]).is_err());
+    fn interact_mode_only_exists_as_app_config() {
+        assert!(Cli::try_parse_from(["ling", "app", "interact-mode"]).is_err());
+        Cli::try_parse_from([
+            "ling",
+            "app",
+            "config",
+            "edit",
+            "--set",
+            "interaction-mode=full-duplex",
+        ])
+        .expect("parse interaction mode through app config");
     }
 
     #[test]
@@ -4913,6 +4945,28 @@ mod tests {
         assert!(help.contains("app"));
         assert!(help.contains("kb"));
         assert!(help.contains("wiki"));
+    }
+
+    #[test]
+    fn unavailable_ai_wakeword_is_hidden_from_help() {
+        let mut command = Cli::command();
+        let ai = command.find_subcommand_mut("ai").expect("ai command");
+        let help = ai.render_long_help().to_string();
+        assert!(!help.contains("wakeword"));
+    }
+
+    #[test]
+    fn targetless_app_commands_reject_app_selectors() {
+        let selector = AppSelector {
+            product_id: Some("product-1".to_owned()),
+            ..Default::default()
+        };
+        for command in ["list", "create", "build", "trace"] {
+            let error =
+                ensure_no_app_selector(&selector, command).expect_err("selector must be rejected");
+            assert!(error.to_string().contains(command));
+        }
+        assert!(ensure_no_app_selector(&AppSelector::default(), "list").is_ok());
     }
 
     #[test]
