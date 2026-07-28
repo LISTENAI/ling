@@ -385,6 +385,9 @@ fn render_mcp(value: &Value) -> String {
             Some(name) => format!("{method} {name}"),
             None => method.to_owned(),
         };
+        if let Some(summary) = summarize_mcp_call(method, params) {
+            return format!("MCP 调用：{label}{summary}");
+        }
         return match params {
             Some(params) if !params.is_null() => {
                 format!("MCP 调用：{label} {}", compact_safe(params))
@@ -395,8 +398,93 @@ fn render_mcp(value: &Value) -> String {
 
     let method = string_at(value, &["/method"]).unwrap_or("unknown");
     match value.get("result") {
-        Some(result) => format!("MCP 结果：{method} {}", compact_safe(result)),
+        Some(result) => match summarize_mcp_result(method, result) {
+            Some(summary) => format!("MCP 结果：{method}{summary}"),
+            None => format!("MCP 结果：{method} {}", compact_safe(result)),
+        },
         None => format!("MCP 事件：{method}"),
+    }
+}
+
+/// 一次交互里最多逐个列出这么多工具名，超出的折叠成计数。
+const MCP_TOOL_NAME_PREVIEW: usize = 6;
+
+/// `initialize` 和 `tools/list` 的载荷包含完整工具描述和 JSON Schema，
+/// 默认输出只保留摘要。`tools/call` 不折叠，`--verbose` 仍输出原始帧。
+fn summarize_mcp_call(method: &str, params: Option<&Value>) -> Option<String> {
+    match method {
+        "initialize" => {
+            let params = params?;
+            let mut parts = Vec::new();
+            if let Some(version) = string_at(params, &["/protocolVersion"]) {
+                parts.push(format!("协议 {version}"));
+            }
+            if let Some(capabilities) = params.pointer("/capabilities").and_then(Value::as_object) {
+                if !capabilities.is_empty() {
+                    parts.push(format!(
+                        "能力：{}",
+                        capabilities.keys().cloned().collect::<Vec<_>>().join("、")
+                    ));
+                }
+            }
+            Some(parenthesized(&parts))
+        }
+        "tools/list" => Some(String::new()),
+        _ => None,
+    }
+}
+
+fn summarize_mcp_result(method: &str, result: &Value) -> Option<String> {
+    match method {
+        "initialize" => {
+            let mut parts = Vec::new();
+            if let Some(name) = string_at(result, &["/serverInfo/name"]) {
+                match string_at(result, &["/serverInfo/version"]) {
+                    Some(version) => parts.push(format!("{name} {version}")),
+                    None => parts.push(name.to_owned()),
+                }
+            }
+            if let Some(count) = result
+                .pointer("/capabilities/tools/count")
+                .and_then(Value::as_u64)
+            {
+                parts.push(format!("{count} 个工具"));
+            }
+            Some(parenthesized(&parts))
+        }
+        "tools/list" => {
+            let tools = result.pointer("/tools")?.as_array()?;
+            let names = tools
+                .iter()
+                .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+                .collect::<Vec<_>>();
+            let detail = if names.is_empty() {
+                format!("{} 个工具", tools.len())
+            } else if names.len() > MCP_TOOL_NAME_PREVIEW {
+                format!(
+                    "{} 个工具：{} 等",
+                    names.len(),
+                    names[..MCP_TOOL_NAME_PREVIEW].join("、")
+                )
+            } else {
+                format!("{} 个工具：{}", names.len(), names.join("、"))
+            };
+            Some(parenthesized(&[detail]))
+        }
+        _ => None,
+    }
+}
+
+fn parenthesized(parts: &[String]) -> String {
+    let parts = parts
+        .iter()
+        .filter(|part| !part.is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("（{}）", parts.join("；"))
     }
 }
 
@@ -1141,10 +1229,94 @@ mod tests {
             body: body.clone(),
         };
 
+        // initialize 走摘要路径，载荷整体不出现在默认输出里。
         let human = render_frame_at(&RequestDirection::Downstream, &body, "16:42:04.750");
-        assert!(human.contains(r#""token":"[REDACTED]""#));
+        assert_eq!(
+            human,
+            "[16:42:04.750] ↓ MCP 调用：initialize（能力：vision）"
+        );
         assert!(!human.contains("short-lived-jwt"));
         assert!(render_verbose_event(&event).contains("short-lived-jwt"));
+    }
+
+    #[test]
+    fn human_mcp_tool_call_keeps_arguments_but_redacts_credentials() {
+        let body = json!({
+            "action": "mcp",
+            "data": {
+                "method": "tools/call",
+                "params": {
+                    "name": "sync_notes",
+                    "arguments": {"token": "short-lived-jwt", "limit": 3}
+                }
+            }
+        })
+        .to_string();
+        let event = RequestEvent::Frame {
+            direction: RequestDirection::Downstream,
+            body: body.clone(),
+        };
+
+        let human = render_frame_at(&RequestDirection::Downstream, &body, "16:42:04.750");
+        assert!(human.contains("tools/call sync_notes"));
+        assert!(human.contains(r#""token":"[REDACTED]""#));
+        assert!(human.contains(r#""limit":3"#));
+        assert!(!human.contains("short-lived-jwt"));
+        assert!(render_verbose_event(&event).contains("short-lived-jwt"));
+    }
+
+    #[test]
+    fn human_mcp_summarizes_initialize_and_tools_list_results() {
+        let initialize = json!({
+            "action": "mcp",
+            "method": "initialize",
+            "result": {
+                "capabilities": {"tools": {"count": 3}},
+                "instructions": "设备端MCP服务，提供系统信息查询、设备控制等工具调用功能",
+                "serverInfo": {"name": "arcs-mini", "version": "1.0.0"}
+            }
+        })
+        .to_string();
+        assert_eq!(
+            render_frame_at(&RequestDirection::Upstream, &initialize, "16:42:04.000"),
+            "[16:42:04.000] ↑ MCP 结果：initialize（arcs-mini 1.0.0；3 个工具）"
+        );
+
+        let tools = json!({
+            "action": "mcp",
+            "method": "tools/list",
+            "result": {
+                "tools": [
+                    {"name": "ls.led_switch", "description": "很长的工具说明", "inputSchema": {}},
+                    {"name": "ls.led_blink", "description": "很长的工具说明", "inputSchema": {}}
+                ]
+            }
+        })
+        .to_string();
+        let rendered = render_frame_at(&RequestDirection::Upstream, &tools, "16:42:04.100");
+        assert_eq!(
+            rendered,
+            "[16:42:04.100] ↑ MCP 结果：tools/list（2 个工具：ls.led_switch、ls.led_blink）"
+        );
+        assert!(!rendered.contains("inputSchema"));
+    }
+
+    #[test]
+    fn human_mcp_folds_long_tool_lists_into_a_count() {
+        let tools = (0..MCP_TOOL_NAME_PREVIEW + 2)
+            .map(|index| json!({"name": format!("ls.tool_{index}")}))
+            .collect::<Vec<_>>();
+        let body = json!({
+            "action": "mcp",
+            "method": "tools/list",
+            "result": {"tools": tools}
+        })
+        .to_string();
+
+        let rendered = render_frame_at(&RequestDirection::Upstream, &body, "16:42:04.200");
+        assert!(rendered.contains(&format!("{} 个工具：", MCP_TOOL_NAME_PREVIEW + 2)));
+        assert!(rendered.ends_with("等）"));
+        assert!(!rendered.contains(&format!("ls.tool_{}", MCP_TOOL_NAME_PREVIEW + 1)));
     }
 
     #[test]

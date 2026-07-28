@@ -37,6 +37,9 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
   Skill。找不到专用 Skill 时停止，不要自行猜测仓库、工具链或烧录命令。
 - `tone` 管理的是最终通过端云通道下发并合成为提示音的文案，不管理音频
   文件。
+- `--set key=value` 的取值按 JSON 解析。文案本身像 JSON 时（纯数字、
+  `true`/`false`、以 `[` 或 `{` 开头）必须写成 `--set key='"文本"'`，
+  否则类型会出错；详见[命令参考](references/commands.md)。
 
 ## 目标应用
 
@@ -63,7 +66,8 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 | 操作 | 网页 |
 | --- | --- |
 | 删除应用、角色、MCP 或专业词汇 | `https://platform.listenai.com/appConfig?id=<project_id>` |
-| 查看设备列表、切换设备强制白名单 | `https://platform.listenai.com/appConfig?id=<project_id>` |
+| 查看设备列表 | `https://platform.listenai.com/appConfig?id=<project_id>` |
+| 切换设备强制白名单（`device enforce` 只读） | `https://platform.listenai.com/appConfig?id=<project_id>` |
 | OTA 正式发布或撤销 | `https://platform.listenai.com/appConfig?id=<project_id>` |
 | 删除账号级知识库 | `https://platform.listenai.com/datasets` |
 | 删除知识库文档 | `https://platform.listenai.com/datasets/detail?id=<index_id>` |
@@ -77,16 +81,18 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 ling app --product-id <product_id> request --text 你好
 ```
 
-- 默认输出带时间和方向的双向事件摘要。
+- 默认输出带时间和方向的双向事件摘要，MCP 的 `initialize` 和 `tools/list`
+  折叠为工具数量和名称。
 - 只有需要逐事件排查时才使用 `--verbose`；分享输出前先脱敏。
 - `--output-tts <file>` 保存首个 TTS 音频。
 - 默认使用 CLI 管理的 Device ID。只有用户明确指定设备身份时才传
   `--device-id`；只有用户明确要求定向诊断某个 App ID 时才传
   `--llm-app`。
 - 如果鉴权返回 `20105`，读取本次 Device ID，询问用户是否授权将它导入
-  当前应用。取得明确授权后才能执行 `device add`，且不得擅自切换强制
-  白名单。
+  当前应用。取得明确授权后才能执行 `device add`；强制白名单只能在网页
+  切换，不要代用户去开关。
 - 使用返回的 SID 执行 `ling app trace <sid>`，先查看默认时序概览。
+  `trace` 按 SID 全局查询，不要给它传应用标识。
 - 概览不足、需要查看未识别事件或逐步交互时使用 `--verbose`。
 - 只有诊断解析歧义或保存机器可读证据时才使用 `--json`。
 

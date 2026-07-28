@@ -63,6 +63,7 @@ ling app inspect <product_id> --json
 
 ```bash
 ling app create <name>
+ling app create <name> --description <description>
 
 ling app role list
 ling app role show <role_id>
@@ -96,8 +97,8 @@ ling app mcp disable <mcp_id>
 ling app config show
 ling app config edit --set name=<name>
 ling app config edit --set description=<description>
-ling app config edit --set interaction-mode=full-duplex
-ling app config edit --set system-prompt='"..."'
+ling app config edit --set interaction_mode=full-duplex
+ling app config edit --set system_prompt='"..."'
 ling app config reset-model
 ling app config test-model --endpoint <url> --model <model>
 
@@ -122,8 +123,31 @@ ling app ota whitelist delete <device_id>
 - `mcp list` 同时展示记录 ID 和 Server ID。后续操作使用记录 ID；
   `mcp show` 不输出 Authorization 明文。
 - `config show` 默认以表格列出可编辑 Key、枚举值和格式约束；
-  `--json` 输出结构化 `editable_fields`。
+  `--json` 输出结构化 `editable_fields`。Key 以 `config show` 的写法为准。
+- `config edit` 成功后回显本次实际改动的字段名。
+- `device enforce` 只读，显示当前强制白名单状态和网页入口。
 - `tone` 中的值是合成设备提示音的文案，不是音频文件。
+
+### `--set` 的取值规则
+
+`role`、`mcp`、`config`、`tone` 的 `--set key=value` 按同一套规则解析取值：
+
+- `on` 和 `off` 解析为布尔真假。
+- 其余取值先按 JSON 解析，解析失败才当作字符串。
+
+因此 `--set speed=60` 传出的是数字，`--set enabled=on` 是布尔。当文案本身
+可能被当成 JSON——纯数字、`true`/`false`/`null`、以 `[` 或 `{` 开头——必须
+用 `--set key='"文本"'` 显式包成 JSON 字符串。`config edit` 会当场报
+「必须是字符串」，其余命令会把错误的类型直接发给服务端。
+
+取值含引号、换行或结构化内容时，改用 `--file <file.json>` 传完整请求对象：
+
+```bash
+ling app role edit <role_id> --file role.json
+ling app config edit --file config.json
+ling app mcp edit <mcp_id> --file mcp.json
+ling app tone edit --file tones.json
+```
 
 ## 网页交接命令
 
@@ -135,13 +159,15 @@ ling app role delete <role_id>
 ling app mcp delete <mcp_id>
 ling app lexicon delete <hotword_id>
 ling app device list
-ling app device enforce on
 ling app ota publish <package_id>
 ling app ota revoke <package_id>
 
 ling kb delete <index_id>
 ling kb doc <index_id> delete <doc_id>...
 ```
+
+切换设备强制白名单没有对应的 CLI 命令，只能在网页操作；`ling app device
+enforce` 会连同当前状态一起给出入口。
 
 不要绕过这些入口直接调用删除、发布或白名单切换接口。
 
@@ -165,8 +191,14 @@ ling app trace <sid> --hours 2
 鉴权错误会显示实际 Device ID；`--device-id` 只覆盖本次请求。
 `--llm-app` 只用于用户明确要求的定向诊断。
 
-`trace` 默认提炼关键时序事件。概览不足时使用 `--verbose`；需要保存机器可读
-记录时使用 `--json`。详细输出可能包含完整请求上下文和工具结果。
+默认时间线把 `initialize` 和 `tools/list` 折叠成工具数量和名称摘要；需要
+完整的工具描述和 JSON Schema 时用 `--verbose`。`tools/call` 的参数和结果
+在默认输出里就是完整的。
+
+`trace` 按 SID 全局查询，自己解析出所属应用，因此不接受 `--product-id`、
+`--project-id` 或 `--app-id`。默认提炼关键时序事件；概览不足时使用
+`--verbose`，需要保存机器可读记录时使用 `--json`。详细输出可能包含完整
+请求上下文和工具结果。
 
 ## 自定义 Agent 项目
 

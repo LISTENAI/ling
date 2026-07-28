@@ -7,7 +7,7 @@ mod test_support;
 mod v1_api;
 
 use anyhow::{anyhow, Context, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use ling_plugin_app::request::{RequestDirection, RequestEvent, RequestInput, RequestOptions};
 use ling_plugin_app::{config_view, management};
 use serde_json::Value;
@@ -408,10 +408,8 @@ enum DeviceCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Show or toggle whitelist enforcement.
+    /// Show whitelist enforcement. Toggling it is a web-only operation.
     Enforce {
-        #[arg(value_parser = ["on", "off"])]
-        state: Option<String>,
         /// Print the raw JSON response.
         #[arg(long)]
         json: bool,
@@ -953,7 +951,10 @@ enum WikiCommand {
 #[tokio::main]
 async fn main() -> ExitCode {
     let _terminal_encoding = terminal::init();
-    let cli = match Cli::try_parse() {
+    let cli = match cli_command()
+        .try_get_matches()
+        .and_then(|matches| Cli::from_arg_matches(&matches))
+    {
         Ok(cli) => cli,
         Err(err) => {
             let code = err.exit_code();
@@ -1759,35 +1760,28 @@ async fn device_command(cli: &Ctx, args: DeviceArgs, selector: AppSelector) -> R
                 )
             }
         }
-        DeviceCommand::Enforce { state, json } => match state {
-            None => {
-                let output = management::get_resource(
-                    &cli.api_base_url,
-                    &app.api_key,
-                    &app.project_id,
-                    &["device-whitelist"],
-                )
-                .await?;
-                if json {
-                    print_json(&output)?;
-                } else {
-                    let enabled = output
-                        .pointer("/data/enabled")
-                        .and_then(Value::as_bool)
-                        .context("设备白名单响应缺少 data.enabled")?;
-                    println!("{}", if enabled { "on" } else { "off" });
-                }
+        DeviceCommand::Enforce { json } => {
+            let output = management::get_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["device-whitelist"],
+            )
+            .await?;
+            if json {
+                print_json(&output)?;
+            } else {
+                let enabled = output
+                    .pointer("/data/enabled")
+                    .and_then(Value::as_bool)
+                    .context("设备白名单响应缺少 data.enabled")?;
+                println!("{}", if enabled { "on" } else { "off" });
+                println!(
+                    "切换强制白名单会立刻影响线上设备接入，CLI 不执行；请前往网页操作：{}",
+                    app_config_url(&app.project_id)
+                );
             }
-            Some(state) => {
-                return Err(app_config_only_operation(
-                    &format!(
-                        "{}设备强制白名单",
-                        if state == "on" { "开启" } else { "关闭" }
-                    ),
-                    &app.project_id,
-                ));
-            }
-        },
+        }
         DeviceCommand::List => {
             return Err(app_config_only_operation("查看设备列表", &app.project_id));
         }
@@ -2985,6 +2979,12 @@ async fn config_command(cli: &Ctx, args: ConfigArgs, selector: AppSelector) -> R
                     APP_CONFIG_EDITABLE_KEYS.join("、")
                 );
             }
+            // 服务端按分组接收更新，回显仍用 config show 的字段名。
+            let updated_keys = APP_CONFIG_EDITABLE_KEYS
+                .iter()
+                .filter(|key| fields.contains_key(**key))
+                .copied()
+                .collect::<Vec<_>>();
             let mut results = serde_json::Map::new();
 
             if let Some(project) = take_project_config(&mut fields)? {
@@ -3045,16 +3045,7 @@ async fn config_command(cli: &Ctx, args: ConfigArgs, selector: AppSelector) -> R
             if json {
                 print_json(&output)
             } else {
-                eprintln!(
-                    "配置已更新：{}",
-                    output
-                        .as_object()
-                        .into_iter()
-                        .flat_map(|object| object.keys())
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
+                eprintln!("配置已更新：{}", updated_keys.join("、"));
                 Ok(())
             }
         }
@@ -3353,6 +3344,37 @@ fn ensure_no_app_selector(selector: &AppSelector, command: &str) -> Result<()> {
     anyhow::bail!(
         "`ling app {command}` 不针对单个应用，不能传 --product-id、--project-id 或 --app-id"
     )
+}
+
+/// 不针对单个应用的子命令，由 [`ensure_no_app_selector`] 拒绝应用标识。
+const TARGETLESS_APP_COMMANDS: [&str; 4] = ["list", "create", "build", "trace"];
+
+const APP_SELECTOR_ARGS: [(&str, &str); 3] = [
+    ("product_id", "product-id"),
+    ("project_id", "project-id"),
+    ("app_id", "app-id"),
+];
+
+/// 应用标识是 `ling app` 的全局参数，clap 会展示在每个子命令的帮助里。
+/// 用同名隐藏参数覆盖 [`TARGETLESS_APP_COMMANDS`]，取值仍落在 `ling app`
+/// 层交给运行时守卫。
+fn cli_command() -> clap::Command {
+    Cli::command().mut_subcommand("app", |app| {
+        TARGETLESS_APP_COMMANDS.iter().fold(app, |app, name| {
+            app.mut_subcommand(name, |command| {
+                APP_SELECTOR_ARGS
+                    .iter()
+                    .fold(command, |command, (id, long)| {
+                        command.arg(
+                            clap::Arg::new(*id)
+                                .long(*long)
+                                .action(clap::ArgAction::Set)
+                                .hide(true),
+                        )
+                    })
+            })
+        })
+    })
 }
 
 async fn explicit_product_id(cli: &Ctx, selector: AppSelector) -> Result<Option<String>> {
@@ -4945,6 +4967,61 @@ mod tests {
         assert!(help.contains("app"));
         assert!(help.contains("kb"));
         assert!(help.contains("wiki"));
+    }
+
+    /// 走 clap 解析路径渲染 `--help`，全局参数已传播到子命令。
+    fn rendered_help(args: &[&str]) -> String {
+        let error = cli_command()
+            .try_get_matches_from(args.iter().copied().chain(["--help"]))
+            .expect_err("--help always short-circuits parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        error.to_string()
+    }
+
+    #[test]
+    fn targetless_app_commands_hide_app_selectors_from_help() {
+        for command in TARGETLESS_APP_COMMANDS {
+            let help = rendered_help(&["ling", "app", command]);
+            for (_, long) in APP_SELECTOR_ARGS {
+                assert!(
+                    !help.contains(long),
+                    "`ling app {command} --help` 不应宣传运行时会被拒绝的 --{long}"
+                );
+            }
+        }
+
+        // 真正针对单个应用的子命令仍然展示标识参数。
+        let help = rendered_help(&["ling", "app", "inspect"]);
+        for (_, long) in APP_SELECTOR_ARGS {
+            assert!(help.contains(long), "`ling app inspect` 应展示 --{long}");
+        }
+    }
+
+    #[test]
+    fn hidden_app_selectors_still_reach_the_runtime_guard() {
+        // 隐藏只影响帮助展示，误传仍走运行时守卫而非 clap 报错。
+        for args in [
+            vec!["ling", "app", "--product-id", "product-1", "trace", "sid-1"],
+            vec!["ling", "app", "trace", "sid-1", "--product-id", "product-1"],
+        ] {
+            let cli = cli_command()
+                .try_get_matches_from(&args)
+                .and_then(|matches| Cli::from_arg_matches(&matches))
+                .expect("selector parses, the guard rejects it later");
+            match cli.command {
+                Command::App(app) => assert_eq!(app.product_id.as_deref(), Some("product-1")),
+                other => panic!("expected app command, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn device_enforce_is_read_only() {
+        let error = Cli::try_parse_from(["ling", "app", "device", "enforce", "on"])
+            .expect_err("toggling whitelist enforcement is a web-only operation");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        Cli::try_parse_from(["ling", "app", "device", "enforce"])
+            .expect("showing state is allowed");
     }
 
     #[test]

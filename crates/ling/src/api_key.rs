@@ -52,7 +52,7 @@ pub use ling_core::{bearer, strip_bearer};
 
 pub fn render_login_success(output: &LoginOutput, api_base_url: &str) -> String {
     format!(
-        "登录成功。\nAPI Key: {api_key}\nAPI Base URL: {api_base_url}\n可用模型: {model_count} 个\n\n下一步：\n- 查看账号：ling account\n- 查看模型：ling ai models\n- 查看应用：ling app list\n- 初始化 Agent：ling app init <agent_name> --product-id <product_id>\n- 切换设备 PID/SID：ling app inspect <product_id> 后执行 adb shell device set_pid/set_sid\n\n使用 `ling login --json` 输出原始 JSON。",
+        "登录成功。\nAPI Key: {api_key}\nAPI Base URL: {api_base_url}\n可用模型: {model_count} 个\n\n下一步：\n- 查看账号：ling account\n- 查看模型：ling ai models\n- 查看应用：ling app list\n- 初始化 Agent：ling app --product-id <product_id> init <agent_name>\n- 切换设备 PID/SID：ling app inspect <product_id> 后执行 adb shell device set_pid/set_sid\n\n使用 `ling login --json` 输出原始 JSON。",
         api_key = output.api_key_preview,
         model_count = output.model_count
     )
