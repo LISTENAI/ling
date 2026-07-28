@@ -38,6 +38,25 @@
   the skill.
 - Do not expose internal environment switching in the public skill.
 
+## CLI and skill compatibility
+
+- Keep the public skill synchronized with every user-observable CLI change,
+  including command names, arguments, defaults, output, authorization
+  boundaries, and supported workflows.
+- Update the relevant files under `skills/ling` in the same commit as the CLI
+  behavior and tests they describe.
+- Declare the minimum compatible stable CLI version near the beginning of
+  `skills/ling/SKILL.md`. Advance it to the next planned stable release when
+  documenting behavior that has not shipped in a stable release yet.
+- Never expose alpha, beta, release-candidate, or other prerelease identifiers
+  in the public skill. A prerelease workspace version must share the same base
+  version as the stable compatibility target declared by the skill.
+- Never claim that an existing stable tag supports behavior added after that
+  tag.
+- Before completing a CLI change, verify the affected skill examples against
+  the built binary and confirm that the skill contains no obsolete command or
+  unsupported capability.
+
 ## Interaction request invariants
 
 - Derive every platform and interaction URL from the global API base URL.
