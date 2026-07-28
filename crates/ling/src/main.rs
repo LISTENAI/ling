@@ -252,12 +252,6 @@ struct ResolvedApp {
 
 #[derive(Debug, Subcommand)]
 enum AppCommand {
-    /// Show the server-side Ling CLI management API capabilities.
-    Capabilities {
-        /// Print the raw JSON response.
-        #[arg(long)]
-        json: bool,
-    },
     /// List platform apps.
     List {
         #[arg(long, default_value_t = 1)]
@@ -1182,15 +1176,6 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
         app_id: args.app_id,
     };
     match args.command {
-        AppCommand::Capabilities { json } => {
-            let api_key = resolve_api_key()?;
-            let output = management::capabilities(&cli.api_base_url, &api_key).await?;
-            if json {
-                print_json(&output)?;
-            } else {
-                println!("{}", config_view::render_management_capabilities(&output)?);
-            }
-        }
         AppCommand::List {
             page,
             page_size,
@@ -4741,6 +4726,13 @@ mod tests {
                 "`ling {cmd}` should no longer parse"
             );
         }
+    }
+
+    #[test]
+    fn app_capabilities_command_is_gone() {
+        let err = Cli::try_parse_from(["ling", "app", "capabilities"])
+            .expect_err("server capability discovery is not a user command");
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
     }
 
     #[test]

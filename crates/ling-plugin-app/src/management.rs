@@ -21,17 +21,6 @@ pub async fn resolve_project_id(
         .context("Project ID 解析响应缺少 project_id")
 }
 
-pub async fn capabilities(api_base_url: &str, api_key: &str) -> Result<Value> {
-    request(
-        api_base_url,
-        api_key,
-        Method::GET,
-        &["v1", "xiaoling", "cli", "capabilities"],
-        None,
-    )
-    .await
-}
-
 pub async fn create_project(
     api_base_url: &str,
     api_key: &str,

@@ -213,27 +213,6 @@ pub fn render_app_kb_list(value: &Value) -> Result<String> {
     Ok(output)
 }
 
-pub fn render_management_capabilities(value: &Value) -> Result<String> {
-    let data = response_data(value)?;
-    let capabilities = data
-        .get("capabilities")
-        .and_then(Value::as_object)
-        .context("能力响应缺少 data.capabilities")?;
-    let mut rows = capabilities
-        .iter()
-        .map(|(name, version)| vec![name.clone(), scalar(version)])
-        .collect::<Vec<_>>();
-    rows.sort_by(|a, b| a[0].cmp(&b[0]));
-    let mut output = format!(
-        "API 版本: {}\n修订版本: {}\n\n{}",
-        field(data, "api_version"),
-        field(data, "revision"),
-        render_table(&["能力", "版本"], &rows)
-    );
-    output.push_str(&format!("\n共 {} 项能力。", rows.len()));
-    Ok(output)
-}
-
 pub fn render_management_config(value: &Value) -> Result<String> {
     let prompt = value
         .get("system_prompt")
@@ -632,14 +611,6 @@ fn with_page_summary(mut output: String, value: &Value, noun: &str, shown: usize
     output
 }
 
-fn scalar(value: &Value) -> String {
-    match value {
-        Value::Null => "-".to_owned(),
-        Value::String(text) => text.clone(),
-        other => other.to_string(),
-    }
-}
-
 fn config_value(value: &Value, key: &str) -> String {
     match value.get(key) {
         Some(Value::String(text)) => text.clone(),
@@ -935,23 +906,6 @@ mod tests {
         assert!(render_management_mcps(&mcp)
             .unwrap()
             .contains("天气查询工具"));
-    }
-
-    #[test]
-    fn renders_management_capabilities_as_table() {
-        let value = json!({
-            "data": {
-                "api_version": "v1",
-                "revision": "2026-07-24",
-                "capabilities": {
-                    "project.agent.model": 1
-                }
-            }
-        });
-        let output = render_management_capabilities(&value).unwrap();
-        assert!(output.contains("API 版本: v1"));
-        assert!(output.contains("project.agent.model"));
-        assert!(!output.contains('{'));
     }
 
     #[test]

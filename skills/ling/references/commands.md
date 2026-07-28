@@ -85,7 +85,6 @@ ling app list
 ling app list --page 2 --page-size 20
 ling app list --service-type device
 ling app list --json
-ling app capabilities
 
 ling app inspect <product_id>
 ling app inspect --project-id <project_id>
