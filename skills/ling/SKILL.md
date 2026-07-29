@@ -1,6 +1,6 @@
 ---
 name: ling
-description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登录、基础 AI 能力、平台应用与知识库管理、端云 request/trace 调试、真实设备应用绑定，以及自定义 Agent 项目的初始化、构建和测试链路部署。当用户提到 ling、小聆、聆思、LSPlatform、product_id、listenai.toml、发音人、提示语文案、端云调试、SID 查询，或需要在终端中操作 ListenAI 平台时使用。
+description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登录、基础 AI 能力、平台应用与知识库管理、端云 request/trace 调试、真实设备应用绑定，以及自定义 Agent 项目的初始化、构建和测试链路部署。当用户提到 ling、小聆、聆思、LSPlatform、product_id、listenai.toml、发音人、唤醒词、唤醒应答语、提示语文案、端云调试、SID 查询，或需要在终端中操作 ListenAI 平台时使用。
 ---
 
 # ListenAI ling
@@ -28,8 +28,8 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 ## 任务分流
 
 - 模型、对话、TTS 或 ASR：使用 `ling ai`。
-- 应用资料、角色、知识库、专业词汇、提示语文案、MCP、设备、OTA 或模型
-  接入配置：使用对应的 `ling app` 子命令。
+- 应用资料、角色、唤醒词与应答语、知识库、专业词汇、提示语文案、MCP、
+  设备、OTA 或模型接入配置：使用对应的 `ling app` 子命令。
 - 模拟端云请求或回查 SID：使用 `request` 和 `trace`。
 - 只有明确涉及自定义 Agent 源码时，才进入 `init/build/deploy` 流程。
 - 单纯切换真实设备 PID/SID 或应用绑定时，不要拉取、构建任何代码仓库。
@@ -73,7 +73,20 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 | 删除知识库文档 | `https://platform.listenai.com/datasets/detail?id=<index_id>` |
 
 - 不要绕过 CLI 限制直接调用这些接口。
-- 明确允许的删除例外只有未正式发布的 OTA 包和 OTA 测试白名单设备。
+- 明确允许的删除例外只有唤醒词、未正式发布的 OTA 包和 OTA 测试白名单
+  设备；执行唤醒词或 OTA 包删除前仍需用户确认。
+
+## 唤醒词
+
+- `wakeword generate` 是异步且可能收费的操作。执行前说明影响并取得用户
+  明确授权，只有获得授权后才追加 `--yes`。
+- 使用 `wakeword show` 查询生成状态；只有状态为“可用”的唤醒词才能通过
+  `role wakeword set` 切换给角色。
+- 应答语是一个整体替换的文本数组：用 `wakeword responses` 查看，
+  `wakeword set-responses` 替换全部内容，`wakeword reset-responses`
+  恢复默认值；不要把它当成可逐条增删的资源。
+- 唤醒应答语和角色唤醒词切换在设备重启后生效。角色切换只修改应用测试
+  配置；生产配置仍需通过正常发布流程同步。
 
 ## 端云调试
 

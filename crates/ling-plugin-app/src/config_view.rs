@@ -398,10 +398,20 @@ pub fn render_management_role_detail(value: &Value) -> Result<String> {
     } else {
         "自定义"
     };
+    let knowledge = role
+        .get("knowledge")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let guide = role.get("idle_guide");
+    let guide_resources = guide
+        .and_then(|guide| guide.get("resources"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let tts = role.get("tts");
     let mut output = [
-        ("角色", field(role, "name")),
-        ("ID", field(role, "id")),
-        ("描述", field(role, "description")),
+        ("角色 ID", field(role, "id")),
         ("状态", field(role, "status")),
         ("默认", yes_no(bool_field(Some(role), "is_default"))),
         ("类型", role_type.to_owned()),
@@ -412,28 +422,87 @@ pub fn render_management_role_detail(value: &Value) -> Result<String> {
     .collect::<Vec<_>>()
     .join("\n");
 
-    if let Some(tts) = role.get("tts") {
-        output.push_str(&format!(
-            "\n\nTTS:\n  发音人: {}\n  语速: {}\n  音量: {}",
-            field(tts, "vcn"),
-            field(tts, "speed"),
-            field(tts, "volume")
-        ));
-    }
+    output.push_str("\n\n可编辑配置:\n");
+    output.push_str(&render_table(
+        &["Key", "配置", "当前值", "可用值/格式"],
+        &[
+            vec![
+                "name".to_owned(),
+                "角色名称".to_owned(),
+                role_text_preview(role, "name", 28),
+                "非空文本 ≤12".to_owned(),
+            ],
+            vec![
+                "description".to_owned(),
+                "角色描述".to_owned(),
+                role_text_preview(role, "description", 28),
+                "文本".to_owned(),
+            ],
+            vec![
+                "persona".to_owned(),
+                "人设".to_owned(),
+                role_text_preview(role, "persona", 28),
+                "文本 ≤2000".to_owned(),
+            ],
+            vec![
+                "avatar_url".to_owned(),
+                "头像".to_owned(),
+                role_text_preview(role, "avatar_url", 28),
+                "URL ≤2048".to_owned(),
+            ],
+            vec![
+                "vcn".to_owned(),
+                "发音人".to_owned(),
+                tts.map(|tts| field(tts, "vcn"))
+                    .unwrap_or_else(|| "-".to_owned()),
+                "VCN ID".to_owned(),
+            ],
+            vec![
+                "volume".to_owned(),
+                "音量".to_owned(),
+                tts.map(|tts| field(tts, "volume"))
+                    .unwrap_or_else(|| "-".to_owned()),
+                "数字".to_owned(),
+            ],
+            vec![
+                "speed".to_owned(),
+                "语速".to_owned(),
+                tts.map(|tts| field(tts, "speed"))
+                    .unwrap_or_else(|| "-".to_owned()),
+                "数字".to_owned(),
+            ],
+            vec![
+                "knowledge".to_owned(),
+                "知识库关联".to_owned(),
+                item_count(knowledge.len(), "项"),
+                "JSON 数组".to_owned(),
+            ],
+            vec![
+                "idle_guide.interval_ms".to_owned(),
+                "闲时引导间隔".to_owned(),
+                guide
+                    .map(|guide| field(guide, "interval_ms"))
+                    .unwrap_or_else(|| "-".to_owned()),
+                "数字（毫秒）".to_owned(),
+            ],
+            vec![
+                "idle_guide.resources".to_owned(),
+                "闲时引导文案".to_owned(),
+                item_count(guide_resources.len(), "条"),
+                "JSON 数组 ≤10".to_owned(),
+            ],
+        ],
+    ));
+
     if let Some(persona) = role.get("persona").and_then(Value::as_str) {
         if !persona.is_empty() {
-            output.push_str("\n\n人设:\n");
+            output.push_str("\n\n人设全文（persona）:\n");
             output.push_str(persona);
         }
     }
 
-    let knowledge = role
-        .get("knowledge")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
     if knowledge.is_empty() {
-        output.push_str("\n\n知识库: 无");
+        output.push_str("\n\n知识库详情（knowledge）: 无");
     } else {
         let rows = knowledge
             .iter()
@@ -444,7 +513,7 @@ pub fn render_management_role_detail(value: &Value) -> Result<String> {
                 ]
             })
             .collect::<Vec<_>>();
-        output.push_str("\n\n知识库:\n");
+        output.push_str("\n\n知识库详情（knowledge）:\n");
         output.push_str(&render_table(&["ID", "名称/类型"], &rows));
     }
 
@@ -466,30 +535,23 @@ pub fn render_management_role_detail(value: &Value) -> Result<String> {
                 ]
             })
             .collect::<Vec<_>>();
-        output.push_str("\n\n唤醒词:\n");
+        output.push_str("\n\n唤醒词（使用 `role wakeword` 管理）:\n");
         output.push_str(&render_table(
             &["唤醒词", "ID", "默认", "灵敏度", "状态"],
             &rows,
         ));
     }
 
-    if let Some(guide) = role.get("idle_guide") {
-        let resources = guide
-            .get("resources")
-            .and_then(Value::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        output.push_str(&format!(
-            "\n\n闲时引导（间隔 {} ms）:",
-            field(guide, "interval_ms")
-        ));
-        if resources.is_empty() {
-            output.push_str(" 无");
-        } else {
-            for (index, resource) in resources.iter().enumerate() {
-                output.push_str(&format!("\n  {}. {}", index + 1, field(resource, "text")));
-            }
-        }
+    if guide_resources.is_empty() {
+        output.push_str("\n\n闲时引导文案（idle_guide.resources）: 无");
+    } else {
+        let rows = guide_resources
+            .iter()
+            .enumerate()
+            .map(|(index, resource)| vec![(index + 1).to_string(), field(resource, "text")])
+            .collect::<Vec<_>>();
+        output.push_str("\n\n闲时引导文案（idle_guide.resources）:\n");
+        output.push_str(&render_table(&["序号", "文案"], &rows));
     }
 
     let expressions = role
@@ -513,56 +575,165 @@ pub fn render_management_role_detail(value: &Value) -> Result<String> {
         output.push_str(&render_table(&["名称", "Key", "类型", "可用"], &rows));
         output.push_str(&format!("\n共 {} 个表情资源。", rows.len()));
     }
-    output.push_str("\n\n可编辑字段:\n");
-    output.push_str(&render_table(
-        &["Key", "配置", "可用值/格式"],
-        &[
-            vec![
-                "name".to_owned(),
-                "角色名称".to_owned(),
-                "非空文本 ≤12".to_owned(),
-            ],
-            vec![
-                "description".to_owned(),
-                "角色描述".to_owned(),
-                "文本".to_owned(),
-            ],
-            vec![
-                "persona".to_owned(),
-                "人设".to_owned(),
-                "文本 ≤2000".to_owned(),
-            ],
-            vec![
-                "avatar_url".to_owned(),
-                "头像".to_owned(),
-                "URL ≤2048".to_owned(),
-            ],
-            vec!["vcn".to_owned(), "发音人".to_owned(), "VCN ID".to_owned()],
-            vec!["volume".to_owned(), "音量".to_owned(), "数字".to_owned()],
-            vec!["speed".to_owned(), "语速".to_owned(), "数字".to_owned()],
-            vec![
-                "knowledge".to_owned(),
-                "知识库关联".to_owned(),
-                "JSON 数组".to_owned(),
-            ],
-            vec![
-                "idle_guide.interval_ms".to_owned(),
-                "闲时引导间隔".to_owned(),
-                "数字（毫秒）".to_owned(),
-            ],
-            vec![
-                "idle_guide.resources".to_owned(),
-                "闲时引导文案".to_owned(),
-                "JSON 数组 ≤10".to_owned(),
-            ],
-            vec![
-                "default_wakeup_word_id".to_owned(),
-                "默认唤醒词".to_owned(),
-                "唤醒词 ID".to_owned(),
-            ],
-        ],
-    ));
     Ok(output)
+}
+
+fn role_text_preview(role: &Value, key: &str, max_chars: usize) -> String {
+    match role.get(key).and_then(Value::as_str) {
+        Some("") => "（空）".to_owned(),
+        Some(value) => config_preview(value, max_chars),
+        None => "-".to_owned(),
+    }
+}
+
+fn item_count(count: usize, noun: &str) -> String {
+    if count == 0 {
+        "无".to_owned()
+    } else {
+        format!("{count} {noun}")
+    }
+}
+
+pub fn wakeup_word_status(status: &str) -> &'static str {
+    match status {
+        "pending" => "等待生成",
+        "training" => "生成中",
+        "ready" => "可用",
+        "failed" => "生成失败",
+        _ => "未知",
+    }
+}
+
+fn wakeup_word_sensitivity(value: &str) -> &'static str {
+    match value {
+        "high" => "高",
+        "medium" => "中",
+        "low" => "低",
+        _ => "未知",
+    }
+}
+
+fn wakeup_word_response_texts(value: &Value) -> Vec<String> {
+    value
+        .get("responses")
+        .and_then(Value::as_array)
+        .map(|responses| {
+            responses
+                .iter()
+                .filter_map(|response| {
+                    response
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn render_management_wakeup_word_list(value: &Value) -> Result<String> {
+    let items = response_items(value)?;
+    if items.is_empty() {
+        return Ok("暂无唤醒词。".to_owned());
+    }
+    let rows = items
+        .iter()
+        .map(|item| {
+            let responses = wakeup_word_response_texts(item).join(" / ");
+            vec![
+                field(item, "name"),
+                field(item, "id"),
+                wakeup_word_status(
+                    item.get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                )
+                .to_owned(),
+                wakeup_word_sensitivity(
+                    item.get("sensitivity")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                )
+                .to_owned(),
+                if bool_field(Some(item), "is_system") {
+                    "系统".to_owned()
+                } else {
+                    "生成".to_owned()
+                },
+                config_preview(&responses, 36),
+            ]
+        })
+        .collect::<Vec<_>>();
+    Ok(with_page_summary(
+        render_table(&["唤醒词", "ID", "状态", "灵敏度", "类型", "应答语"], &rows),
+        value,
+        "唤醒词",
+        rows.len(),
+    ))
+}
+
+pub fn render_management_wakeup_word_detail(value: &Value) -> Result<String> {
+    let item = response_data(value)?;
+    let status = item
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let sensitivity = item
+        .get("sensitivity")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut output = [
+        ("唤醒词", field(item, "name")),
+        ("ID", field(item, "id")),
+        ("状态", wakeup_word_status(status).to_owned()),
+        ("灵敏度", wakeup_word_sensitivity(sensitivity).to_owned()),
+        (
+            "类型",
+            if bool_field(Some(item), "is_system") {
+                "系统".to_owned()
+            } else {
+                "生成".to_owned()
+            },
+        ),
+        ("描述", field(item, "description")),
+        ("创建时间", field(item, "created_at")),
+        ("更新时间", field(item, "updated_at")),
+    ]
+    .into_iter()
+    .map(|(label, value)| format!("{label}: {value}"))
+    .collect::<Vec<_>>()
+    .join("\n");
+    let responses = wakeup_word_response_texts(item);
+    output.push_str("\n\n应答语:");
+    if responses.is_empty() {
+        output.push_str(" 无");
+    } else {
+        for (index, response) in responses.iter().enumerate() {
+            output.push_str(&format!("\n  {}. {response}", index + 1));
+        }
+    }
+    Ok(output)
+}
+
+pub fn render_wakeup_word_responses(value: &Value) -> Result<String> {
+    let data = response_data(value)?;
+    let responses = wakeup_word_response_texts(data);
+    if responses.is_empty() {
+        return Ok("暂无唤醒应答语。".to_owned());
+    }
+    Ok(render_table(
+        &["序号", "应答语"],
+        &responses
+            .iter()
+            .enumerate()
+            .map(|(index, text)| vec![(index + 1).to_string(), text.clone()])
+            .collect::<Vec<_>>(),
+    ))
+}
+
+pub fn render_role_wakeup_word(role_id: &str, value: &Value) -> Result<String> {
+    let detail = render_management_wakeup_word_detail(value)?;
+    Ok(format!("角色 ID: {role_id}\n\n{detail}"))
 }
 
 pub fn render_management_ota_list(value: &Value) -> Result<String> {
@@ -1094,15 +1265,84 @@ mod tests {
             }
         });
         let output = render_management_role_detail(&value).unwrap();
-        assert!(output.contains("角色: 小聆老师"));
-        assert!(output.contains("人设:"));
-        assert!(output.contains("唤醒词:"));
-        assert!(output.contains("闲时引导（间隔 3000 ms）"));
-        assert!(output.contains("表情资源:"));
-        assert!(output.contains("可编辑字段:"));
-        assert!(output.contains("default_wakeup_word_id"));
+        assert!(output.contains("角色 ID: role-1"));
+        assert!(output.contains("可编辑配置:"));
+        assert!(output.contains("当前值"));
+        assert!(output.contains("name"));
+        assert!(output.contains("小聆老师"));
+        assert!(output.contains("persona"));
+        assert!(output.contains("先给结论，再讲理由。"));
+        assert!(output.contains("vcn"));
+        assert!(output.contains("x4_lingxiaoyue_oral"));
+        assert!(output.contains("idle_guide.interval_ms"));
+        assert!(output.contains("3000"));
         assert!(output.contains("idle_guide.resources"));
+        assert!(output.contains("1 条"));
+        assert!(output.contains("人设全文（persona）:"));
+        assert!(output.contains("唤醒词（使用 `role wakeword` 管理）:"));
+        assert!(output.contains("闲时引导文案（idle_guide.resources）:"));
+        assert!(output.contains("表情资源:"));
         assert!(!output.contains("\"persona\""));
+    }
+
+    #[test]
+    fn renders_wakeup_word_list_and_detail() {
+        let item = json!({
+            "id": "word-1",
+            "name": "小聆小聆",
+            "description": "系统唤醒词",
+            "sensitivity": "medium",
+            "status": "ready",
+            "is_system": true,
+            "responses": [{"text": "你好"}, {"text": "我在"}],
+            "created_at": "2026-07-29 10:00:00",
+            "updated_at": "2026-07-29 10:01:00"
+        });
+        let list = json!({
+            "data": [item.clone()],
+            "page": 1,
+            "pageSize": 20,
+            "total": 1
+        });
+        let output = render_management_wakeup_word_list(&list).unwrap();
+        assert!(output.contains("小聆小聆"));
+        assert!(output.contains("word-1"));
+        assert!(output.contains("可用"));
+        assert!(output.contains("你好 / 我在"));
+        assert!(output.contains("共 1 个唤醒词"));
+
+        let detail = render_management_wakeup_word_detail(&json!({"data": item})).unwrap();
+        assert!(detail.contains("灵敏度: 中"));
+        assert!(detail.contains("类型: 系统"));
+        assert!(detail.contains("1. 你好"));
+        assert!(detail.contains("2. 我在"));
+    }
+
+    #[test]
+    fn renders_wakeup_word_responses_and_role_assignment() {
+        let responses = json!({
+            "data": {
+                "responses": [{"text": "你好"}, {"text": "我在"}]
+            }
+        });
+        let output = render_wakeup_word_responses(&responses).unwrap();
+        assert!(output.contains("序号"));
+        assert!(output.contains("你好"));
+        assert!(!output.contains('{'));
+
+        let detail = json!({
+            "data": {
+                "id": "word-1",
+                "name": "小聆小聆",
+                "sensitivity": "medium",
+                "status": "ready",
+                "is_system": true,
+                "responses": [{"text": "你好"}]
+            }
+        });
+        let output = render_role_wakeup_word("role-1", &detail).unwrap();
+        assert!(output.contains("角色 ID: role-1"));
+        assert!(output.contains("唤醒词: 小聆小聆"));
     }
 
     #[test]

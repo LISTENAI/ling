@@ -110,6 +110,35 @@ pub async fn list_framework_agent_versions(
     send_json(Method::GET, url, api_key, None).await
 }
 
+pub async fn require_cli_capability(
+    api_base_url: &str,
+    api_key: &str,
+    capability: &str,
+    feature: &str,
+) -> Result<()> {
+    let url = endpoint(api_base_url, &["v1", "xiaoling", "cli", "capabilities"])?;
+    let response = ling_core::client()?
+        .get(url)
+        .header("authorization", ling_core::bearer(api_key))
+        .send()
+        .await?;
+    if response.status() == StatusCode::NOT_FOUND {
+        anyhow::bail!("当前服务端不支持{feature}");
+    }
+    let value = parse_response(response).await?;
+    if !has_cli_capability(&value, capability) {
+        anyhow::bail!("当前服务端不支持{feature}");
+    }
+    Ok(())
+}
+
+fn has_cli_capability(value: &Value, capability: &str) -> bool {
+    value
+        .pointer(&format!("/data/capabilities/{capability}"))
+        .and_then(Value::as_u64)
+        .is_some_and(|version| version > 0)
+}
+
 fn framework_agent_versions_url(
     api_base_url: &str,
     app_id: &str,
@@ -481,5 +510,20 @@ mod tests {
             url.as_str(),
             "https://api.listenai.com/v1/framework/agents/app%2Fid/versions?page=2&page_size=50"
         );
+    }
+
+    #[test]
+    fn detects_versioned_cli_capabilities() {
+        let value = json!({
+            "data": {
+                "capabilities": {
+                    "project.wakeup-word": 1,
+                    "disabled": 0
+                }
+            }
+        });
+        assert!(has_cli_capability(&value, "project.wakeup-word"));
+        assert!(!has_cli_capability(&value, "disabled"));
+        assert!(!has_cli_capability(&value, "missing"));
     }
 }

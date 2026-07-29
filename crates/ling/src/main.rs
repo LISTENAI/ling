@@ -327,6 +327,8 @@ enum AppCommand {
     Ota(OtaArgs),
     /// Role management.
     Role(RoleArgs),
+    /// Wake-up word generation and response management.
+    Wakeword(AppWakewordArgs),
     /// App-linked knowledge bases.
     Kb(AppKbArgs),
     /// Domain lexicon (hotwords) management.
@@ -562,6 +564,111 @@ enum RoleCommand {
     #[command(name = "set-default")]
     SetDefault {
         role_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show or switch the wake-up word used by a role.
+    Wakeword(RoleWakewordArgs),
+}
+
+#[derive(Debug, Args)]
+struct RoleWakewordArgs {
+    #[command(subcommand)]
+    command: RoleWakewordCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum RoleWakewordCommand {
+    /// Show the wake-up word currently used by a role.
+    Show {
+        role_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Switch a role to a ready wake-up word.
+    Set {
+        role_id: String,
+        wakeword_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Args)]
+struct AppWakewordArgs {
+    #[command(subcommand)]
+    command: WakewordCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum WakewordCommand {
+    /// List generated and system wake-up words.
+    List {
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+        #[arg(long = "page-size", default_value_t = 20)]
+        page_size: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one wake-up word and its generation status.
+    Show {
+        wakeword_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Start generating a wake-up word.
+    Generate {
+        name: String,
+        #[arg(long, value_parser = ["low", "medium", "high"], default_value = "medium")]
+        sensitivity: String,
+        /// Initial response text (1-12 chars). Repeat up to five times.
+        #[arg(long = "response")]
+        responses: Vec<String>,
+        /// Description, up to 120 characters.
+        #[arg(long)]
+        description: Option<String>,
+        /// Skip the paid-generation confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show all response texts of a wake-up word.
+    Responses {
+        /// Wake-up word ID.
+        wakeword_id: String,
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace all response texts of a wake-up word.
+    #[command(name = "set-responses")]
+    SetResponses {
+        /// Wake-up word ID.
+        wakeword_id: String,
+        /// Response texts (1-12 chars each, up to five).
+        #[arg(value_name = "TEXT", required = true, num_args = 1..=5)]
+        responses: Vec<String>,
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Restore the default response text of a wake-up word.
+    #[command(name = "reset-responses")]
+    ResetResponses {
+        /// Wake-up word ID.
+        wakeword_id: String,
+        /// Print the raw JSON response.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a generated wake-up word.
+    Delete {
+        wakeword_id: String,
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
         #[arg(long)]
         json: bool,
     },
@@ -1295,6 +1402,7 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
         AppCommand::Device(args) => device_command(cli, args, selector).await?,
         AppCommand::Ota(args) => ota_command(cli, args, selector).await?,
         AppCommand::Role(args) => role_command(cli, args, selector).await?,
+        AppCommand::Wakeword(args) => wakeword_command(cli, args, selector).await?,
         AppCommand::Kb(args) => app_kb_command(cli, args, selector).await?,
         AppCommand::Lexicon(args) => lexicon_command(cli, args, selector).await?,
         AppCommand::Tone(args) => tone_command(cli, args, selector).await?,
@@ -1904,7 +2012,292 @@ async fn role_command(cli: &Ctx, args: RoleArgs, selector: AppSelector) -> Resul
             .await?;
             print_action_or_json(&output, json, "默认角色设置成功")
         }
+        RoleCommand::Wakeword(args) => match args.command {
+            RoleWakewordCommand::Show { role_id, json } => {
+                management::require_cli_capability(
+                    &cli.api_base_url,
+                    &app.api_key,
+                    "project.wakeup-word",
+                    "角色唤醒词管理",
+                )
+                .await?;
+                let output = management::get_resource(
+                    &cli.api_base_url,
+                    &app.api_key,
+                    &app.project_id,
+                    &["roles", &role_id, "wakeup-word"],
+                )
+                .await?;
+                if json {
+                    print_json(&output)
+                } else {
+                    let wakeword_id = output
+                        .pointer("/data/wakeup_word_id")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                        .context("角色尚未配置唤醒词")?;
+                    let detail = management::get_resource(
+                        &cli.api_base_url,
+                        &app.api_key,
+                        &app.project_id,
+                        &["wakeup-words", wakeword_id],
+                    )
+                    .await?;
+                    println!(
+                        "{}",
+                        config_view::render_role_wakeup_word(&role_id, &detail)?
+                    );
+                    Ok(())
+                }
+            }
+            RoleWakewordCommand::Set {
+                role_id,
+                wakeword_id,
+                json,
+            } => {
+                management::require_cli_capability(
+                    &cli.api_base_url,
+                    &app.api_key,
+                    "project.wakeup-word",
+                    "角色唤醒词管理",
+                )
+                .await?;
+                let detail = management::get_resource(
+                    &cli.api_base_url,
+                    &app.api_key,
+                    &app.project_id,
+                    &["wakeup-words", &wakeword_id],
+                )
+                .await?;
+                let status = detail
+                    .pointer("/data/status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if status != "ready" {
+                    anyhow::bail!(
+                        "唤醒词 {wakeword_id} 尚不可用（状态：{}）",
+                        config_view::wakeup_word_status(status)
+                    );
+                }
+                let output = management::update_resource(
+                    &cli.api_base_url,
+                    &app.api_key,
+                    &app.project_id,
+                    &["roles", &role_id, "wakeup-word"],
+                    serde_json::json!({"wakeup_word_id": wakeword_id}),
+                )
+                .await?;
+                print_action_or_json(&output, json, "角色唤醒词切换成功")
+            }
+        },
     }
+}
+
+async fn wakeword_command(cli: &Ctx, args: AppWakewordArgs, selector: AppSelector) -> Result<()> {
+    let app = resolve_app(cli, selector).await?;
+    management::require_cli_capability(
+        &cli.api_base_url,
+        &app.api_key,
+        "project.wakeup-word",
+        "唤醒词管理",
+    )
+    .await?;
+    match args.command {
+        WakewordCommand::List {
+            page,
+            page_size,
+            json,
+        } => {
+            let output = management::list_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["wakeup-words"],
+                page,
+                page_size,
+            )
+            .await?;
+            if json {
+                print_json(&output)
+            } else {
+                println!(
+                    "{}",
+                    config_view::render_management_wakeup_word_list(&output)?
+                );
+                Ok(())
+            }
+        }
+        WakewordCommand::Show { wakeword_id, json } => {
+            let output = management::get_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["wakeup-words", &wakeword_id],
+            )
+            .await?;
+            if json {
+                print_json(&output)
+            } else {
+                println!(
+                    "{}",
+                    config_view::render_management_wakeup_word_detail(&output)?
+                );
+                Ok(())
+            }
+        }
+        WakewordCommand::Generate {
+            name,
+            sensitivity,
+            responses,
+            description,
+            yes,
+            json,
+        } => {
+            let name = validate_wakeup_word_name(&name)?;
+            let responses = wakeup_word_responses(responses, true)?;
+            if description
+                .as_deref()
+                .is_some_and(|value| value.chars().count() > 120)
+            {
+                anyhow::bail!("唤醒词描述最多 120 个字符");
+            }
+            if !yes
+                && !confirm(&format!(
+                    "生成唤醒词「{name}」可能产生费用。确认提交生成任务？"
+                ))?
+            {
+                eprintln!("已取消。");
+                return Ok(());
+            }
+            let mut body = serde_json::json!({
+                "name": name,
+                "sensitivity": sensitivity,
+            });
+            if !responses.is_empty() {
+                body["responses"] = Value::Array(responses);
+            }
+            if let Some(description) = description {
+                body["description"] = Value::String(description);
+            }
+            let output = management::create_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["wakeup-words"],
+                body,
+            )
+            .await?;
+            if json {
+                print_json(&output)
+            } else {
+                println!("唤醒词生成任务已提交。");
+                println!(
+                    "{}",
+                    config_view::render_management_wakeup_word_detail(&output)?
+                );
+                if let Some(id) = output.pointer("/data/id").and_then(Value::as_str) {
+                    println!(
+                        "\n使用 `ling app --product-id {} wakeword show {id}` 查询生成状态。",
+                        app.product_id
+                    );
+                }
+                Ok(())
+            }
+        }
+        WakewordCommand::Responses { wakeword_id, json } => {
+            let output = management::get_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["wakeup-words", &wakeword_id, "responses"],
+            )
+            .await?;
+            if json {
+                print_json(&output)
+            } else {
+                println!("{}", config_view::render_wakeup_word_responses(&output)?);
+                Ok(())
+            }
+        }
+        WakewordCommand::SetResponses {
+            wakeword_id,
+            responses,
+            json,
+        } => {
+            let responses = wakeup_word_responses(responses, false)?;
+            let output = management::update_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["wakeup-words", &wakeword_id, "responses"],
+                serde_json::json!({"responses": responses}),
+            )
+            .await?;
+            print_action_or_json(&output, json, "唤醒应答语更新成功")
+        }
+        WakewordCommand::ResetResponses { wakeword_id, json } => {
+            let output = management::update_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["wakeup-words", &wakeword_id, "responses"],
+                serde_json::json!({"responses": [{"text": "你好"}]}),
+            )
+            .await?;
+            print_action_or_json(&output, json, "唤醒应答语已恢复默认")
+        }
+        WakewordCommand::Delete {
+            wakeword_id,
+            yes,
+            json,
+        } => {
+            if !yes && !confirm(&format!("确认删除唤醒词 {wakeword_id}？"))? {
+                eprintln!("已取消。");
+                return Ok(());
+            }
+            let output = management::delete_resource(
+                &cli.api_base_url,
+                &app.api_key,
+                &app.project_id,
+                &["wakeup-words", &wakeword_id],
+            )
+            .await?;
+            print_action_or_json(&output, json, "唤醒词删除成功")
+        }
+    }
+}
+
+fn validate_wakeup_word_name(name: &str) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        anyhow::bail!("唤醒词不能为空");
+    }
+    if name.chars().count() > 12 {
+        anyhow::bail!("唤醒词最多 12 个字符");
+    }
+    Ok(name.to_owned())
+}
+
+fn wakeup_word_responses(responses: Vec<String>, allow_empty: bool) -> Result<Vec<Value>> {
+    if responses.is_empty() && !allow_empty {
+        anyhow::bail!("至少需要一条唤醒应答语");
+    }
+    if responses.len() > 5 {
+        anyhow::bail!("唤醒应答语最多 5 条");
+    }
+    responses
+        .into_iter()
+        .map(|text| {
+            let text = text.trim();
+            if text.is_empty() {
+                anyhow::bail!("唤醒应答语不能为空");
+            }
+            if text.chars().count() > 12 {
+                anyhow::bail!("单条唤醒应答语最多 12 个字符");
+            }
+            Ok(serde_json::json!({"text": text}))
+        })
+        .collect()
 }
 
 fn role_detail_with_project_default(mut detail: Value, roles: &[Value], role_id: &str) -> Value {
@@ -4037,6 +4430,162 @@ mod tests {
             },
             other => panic!("expected app command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_wakeup_word_management_commands() {
+        let generate = Cli::try_parse_from([
+            "ling",
+            "app",
+            "wakeword",
+            "generate",
+            "小聆小聆",
+            "--sensitivity",
+            "high",
+            "--response",
+            "你好",
+            "--response",
+            "我在",
+            "--yes",
+            "--json",
+        ])
+        .expect("parse wakeword generate");
+        match generate.command {
+            Command::App(AppArgs {
+                command:
+                    AppCommand::Wakeword(AppWakewordArgs {
+                        command:
+                            WakewordCommand::Generate {
+                                name,
+                                sensitivity,
+                                responses,
+                                yes,
+                                json,
+                                ..
+                            },
+                    }),
+                ..
+            }) => {
+                assert_eq!(name, "小聆小聆");
+                assert_eq!(sensitivity, "high");
+                assert_eq!(responses, ["你好", "我在"]);
+                assert!(yes);
+                assert!(json);
+            }
+            other => panic!("expected wakeword generate command, got {other:?}"),
+        }
+
+        let responses = Cli::try_parse_from([
+            "ling",
+            "app",
+            "wakeword",
+            "set-responses",
+            "word-1",
+            "你好",
+            "我在",
+            "--json",
+        ])
+        .expect("parse wakeword set-responses");
+        match responses.command {
+            Command::App(AppArgs {
+                command:
+                    AppCommand::Wakeword(AppWakewordArgs {
+                        command:
+                            WakewordCommand::SetResponses {
+                                wakeword_id,
+                                responses,
+                                json,
+                            },
+                    }),
+                ..
+            }) => {
+                assert_eq!(wakeword_id, "word-1");
+                assert_eq!(responses, ["你好", "我在"]);
+                assert!(json);
+            }
+            other => panic!("expected wakeword set-responses command, got {other:?}"),
+        }
+        assert!(matches!(
+            Cli::try_parse_from(["ling", "app", "wakeword", "responses", "word-1", "--json"])
+                .expect("parse wakeword responses")
+                .command,
+            Command::App(AppArgs {
+                command: AppCommand::Wakeword(AppWakewordArgs {
+                    command: WakewordCommand::Responses { json: true, .. }
+                }),
+                ..
+            })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "ling",
+                "app",
+                "wakeword",
+                "reset-responses",
+                "word-1",
+                "--json"
+            ])
+            .expect("parse wakeword reset-responses")
+            .command,
+            Command::App(AppArgs {
+                command: AppCommand::Wakeword(AppWakewordArgs {
+                    command: WakewordCommand::ResetResponses { json: true, .. }
+                }),
+                ..
+            })
+        ));
+        assert!(Cli::try_parse_from([
+            "ling",
+            "app",
+            "wakeword",
+            "response",
+            "set",
+            "word-1",
+            "--response",
+            "你好"
+        ])
+        .is_err());
+
+        assert!(matches!(
+            Cli::try_parse_from([
+                "ling", "app", "role", "wakeword", "set", "role-1", "word-1", "--json"
+            ])
+            .expect("parse role wakeword set")
+            .command,
+            Command::App(AppArgs {
+                command: AppCommand::Role(RoleArgs {
+                    command: RoleCommand::Wakeword(RoleWakewordArgs {
+                        command: RoleWakewordCommand::Set { json: true, .. }
+                    })
+                }),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn validates_wakeup_word_generation_inputs() {
+        assert!(validate_wakeup_word_name("小聆小聆").is_ok());
+        assert!(validate_wakeup_word_name("").is_err());
+        assert_eq!(validate_wakeup_word_name(" hello ").unwrap(), "hello");
+        assert!(validate_wakeup_word_name("一二三四五六七八九十一二三").is_err());
+
+        let responses =
+            wakeup_word_responses(vec![" 你好 ".to_owned(), "我在".to_owned()], false).unwrap();
+        assert_eq!(
+            responses,
+            vec![
+                serde_json::json!({"text": "你好"}),
+                serde_json::json!({"text": "我在"})
+            ]
+        );
+        assert!(wakeup_word_responses(Vec::new(), false).is_err());
+        assert!(wakeup_word_responses(Vec::new(), true).unwrap().is_empty());
+        assert!(wakeup_word_responses(vec![" ".to_owned()], false).is_err());
+        assert!(wakeup_word_responses(vec!["你好".to_owned(); 6], false).is_err());
+        assert!(
+            wakeup_word_responses(vec!["一二三四五六七八九十一二三".to_owned()], false).is_err()
+        );
     }
 
     #[test]

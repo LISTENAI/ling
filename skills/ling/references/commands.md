@@ -73,6 +73,18 @@ ling app role show <role_id>
 ling app role create <name> --set persona='"..."' --set vcn=<vcn>
 ling app role edit <role_id> --set speed=60
 ling app role set-default <role_id>
+ling app role wakeword show <role_id>
+ling app role wakeword set <role_id> <wakeword_id>
+
+ling app wakeword list
+ling app wakeword show <wakeword_id>
+ling app wakeword generate 小聆小聆 \
+  --response "你好，我在"
+ling app wakeword responses <wakeword_id>
+ling app wakeword set-responses <wakeword_id> \
+  "你好" "我在"
+ling app wakeword reset-responses <wakeword_id>
+ling app wakeword delete <wakeword_id>
 
 ling app kb list
 ling app kb link <index_id>
@@ -122,7 +134,13 @@ ling app ota whitelist add <device_id>
 ling app ota whitelist delete <device_id>
 ```
 
-- `role show` 会列出 `role edit --set` 可用的准确 Key、类型和限制。
+- `role show` 以表格列出 `role edit --set` 可用的准确 Key、当前值、类型和
+  限制；长文本和一对多配置会在表格下方展开。
+- `wakeword generate` 可不传应答语，最多接受 5 条 `--response`；单条应答语
+  最多 12 个字符。生成是异步且可能收费的操作，取得用户明确授权后才使用
+  `--yes` 跳过确认。使用 `wakeword show` 查询状态；只有“可用”的唤醒词
+  才能通过 `role wakeword set` 切换给角色。应答语或角色唤醒词修改后需要
+  重启设备；角色切换只修改应用测试配置，生产配置仍需正常发布。
 - `mcp list` 同时展示记录 ID 和 Server ID。后续操作使用记录 ID；
   `mcp show` 不输出 Authorization 明文。
 - `config show` 默认以表格列出可编辑 Key、枚举值和格式约束；

@@ -98,11 +98,26 @@ ling app inspect <product_id> --json
 ling app --product-id <product_id> config show
 ling app --product-id <product_id> config edit --set name=新名称
 ling app --product-id <product_id> config edit --set description=新描述
+
+ling app --product-id <product_id> wakeword list
+ling app --product-id <product_id> wakeword generate 小聆小聆 \
+  --response "你好，我在"
+ling app --product-id <product_id> wakeword show <wakeword_id>
+ling app --product-id <product_id> wakeword responses <wakeword_id>
+ling app --product-id <product_id> wakeword set-responses \
+  <wakeword_id> "你好，我在" "有什么可以帮你"
+ling app --product-id <product_id> wakeword reset-responses <wakeword_id>
+ling app --product-id <product_id> role wakeword set \
+  <role_id> <wakeword_id>
 ```
 
 大多数应用命令使用 Product ID。在 Agent 项目目录中，`ling` 会读取
 `listenai.toml` 中关联的应用。`inspect` 摘要会显示当前是托管接入还是
 自定义接入。
+
+生成唤醒词是异步且可能收费的操作，CLI 会在提交前确认；生成状态变为“可用”
+后才能切换给角色。应答语和角色唤醒词的修改在设备重启后生效；切换只更新
+应用测试配置，生产配置仍通过正常发布流程同步。
 
 查看应用配置相关命令：
 
