@@ -54,8 +54,9 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 - 让用户本人在自己的终端运行 `ling login` 并输入 API Key；不要索取、
   代填、回显或记录完整密钥。
 - `ling app request` 会自行完成应用鉴权，不要要求用户提供额外凭据。
-- `inspect`、`request --verbose` 和 `trace --verbose/--json` 可能包含敏感
-  应用信息、对话、请求上下文或工具结果；展示和转述前先脱敏。
+- `inspect`、`request --verbose`、`trace --verbose/--json` 和
+  `ai asr --verbose` 可能包含敏感应用信息、会话标识、对话、请求上下文或
+  工具结果；展示和转述前先脱敏。
 - 真实设备 SID 属于敏感配置。需要用户输入时，让用户在自己的终端完成，
   不要要求其粘贴到对话中。
 
@@ -73,18 +74,25 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 | 删除知识库文档 | `https://platform.listenai.com/datasets/detail?id=<index_id>` |
 
 - 不要绕过 CLI 限制直接调用这些接口。
-- 明确允许的删除例外只有唤醒词、未正式发布的 OTA 包和 OTA 测试白名单
-  设备；执行唤醒词或 OTA 包删除前仍需用户确认。
+- 明确允许的删除例外只有“生成”类唤醒词、未正式发布的 OTA 包和 OTA 测试
+  白名单设备；执行唤醒词或 OTA 包删除前仍需用户确认。
 
 ## 唤醒词
 
 - `wakeword generate` 是异步且可能收费的操作。执行前说明影响并取得用户
   明确授权，只有获得授权后才追加 `--yes`。
-- 使用 `wakeword show` 查询生成状态；只有状态为“可用”的唤醒词才能通过
-  `role wakeword set` 切换给角色。
+- `generate` 和 `wakeword delete` 在非交互环境下会直接失败，提示
+  「非交互环境，请追加 `--yes` 确认执行」。这句话只说明当前环境无法交互
+  确认，不构成授权；仍要先问用户，得到答复后才重跑并追加 `--yes`。
+- 名称、应答语和描述的长度校验都在提交之前完成，参数写错不会触发计费。
+- 使用 `wakeword show` 查询生成状态，共四种：等待生成、生成中、可用、
+  生成失败。只有“可用”才能通过 `role wakeword set` 切换给角色；
+  “生成失败”是终态，不要继续轮询，需要时重新生成。
 - 应答语是一个整体替换的文本数组：用 `wakeword responses` 查看，
   `wakeword set-responses` 替换全部内容，`wakeword reset-responses`
   恢复默认值；不要把它当成可逐条增删的资源。
+- 只能删除“生成”类唤醒词，“系统”类会被服务端拒绝。删除前先用
+  `wakeword list` 的类型列确认。
 - 唤醒应答语和角色唤醒词切换在设备重启后生效。角色切换只修改应用测试
   配置；生产配置仍需通过正常发布流程同步。
 

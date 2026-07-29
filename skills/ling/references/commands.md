@@ -40,7 +40,8 @@ ling ai asr hello.pcm --json
 
 ASR 音频应为 16kHz、16bit LE、单声道 PCM；WAV 会先校验格式。识别卡住、
 超时或服务端报错时使用 `--verbose` 查看上下行控制帧和音频帧摘要；最终文本
-或 `--json` 结果仍写到标准输出。
+或 `--json` 结果仍写到标准输出。`--verbose` 的帧里含会话标识和完整识别
+文本，展示前先脱敏。
 
 ## 应用查询
 
@@ -77,14 +78,17 @@ ling app role wakeword show <role_id>
 ling app role wakeword set <role_id> <wakeword_id>
 
 ling app wakeword list
+ling app wakeword list --page 2 --page-size 20
 ling app wakeword show <wakeword_id>
 ling app wakeword generate 小聆小聆 \
   --response "你好，我在"
+ling app wakeword generate 小聆小聆 \
+  --sensitivity high --description "客厅音箱"
 ling app wakeword responses <wakeword_id>
 ling app wakeword set-responses <wakeword_id> \
   "你好" "我在"
 ling app wakeword reset-responses <wakeword_id>
-ling app wakeword delete <wakeword_id>
+ling app wakeword delete <wakeword_id> --yes
 
 ling app kb list
 ling app kb link <index_id>
@@ -136,11 +140,20 @@ ling app ota whitelist delete <device_id>
 
 - `role show` 以表格列出 `role edit --set` 可用的准确 Key、当前值、类型和
   限制；长文本和一对多配置会在表格下方展开。
-- `wakeword generate` 可不传应答语，最多接受 5 条 `--response`；单条应答语
-  最多 12 个字符。生成是异步且可能收费的操作，取得用户明确授权后才使用
-  `--yes` 跳过确认。使用 `wakeword show` 查询状态；只有“可用”的唤醒词
-  才能通过 `role wakeword set` 切换给角色。应答语或角色唤醒词修改后需要
-  重启设备；角色切换只修改应用测试配置，生产配置仍需正常发布。
+- `wakeword generate` 的唤醒词名最多 12 个字符，`--description` 最多 120 个
+  字符，`--sensitivity` 取 `low`/`medium`/`high`（默认 `medium`）。可不传
+  应答语，最多接受 5 条 `--response`；单条应答语最多 12 个字符。以上校验
+  都在提交前完成，参数写错不会触发计费。
+- 生成是异步且可能收费的操作。`generate` 和 `wakeword delete` 在非交互
+  环境下直接失败并提示追加 `--yes`；该提示不构成授权，取得用户明确授权
+  后才追加。
+- `wakeword show` 的状态有四种：等待生成、生成中、可用、生成失败。只有
+  “可用”能通过 `role wakeword set` 切换给角色；“生成失败”是终态，不要
+  继续轮询。
+- `wakeword list` 的类型列区分“系统”和“生成”。只能删除“生成”类，
+  删除系统唤醒词会被服务端拒绝。
+- 应答语或角色唤醒词修改后需要重启设备；角色切换只修改应用测试配置，
+  生产配置仍需正常发布。
 - `mcp list` 同时展示记录 ID 和 Server ID。后续操作使用记录 ID；
   `mcp show` 不输出 Authorization 明文。
 - `config show` 默认以表格列出可编辑 Key、枚举值和格式约束；
