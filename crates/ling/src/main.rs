@@ -3478,7 +3478,7 @@ fn take_project_config(fields: &mut serde_json::Map<String, Value>) -> Result<Op
             Value::String(description.to_owned()),
         );
     }
-    Ok((!project.is_empty()).then(|| Value::Object(project)))
+    Ok((!project.is_empty()).then_some(Value::Object(project)))
 }
 
 fn interaction_mode_value(value: &Value) -> Result<i64> {
