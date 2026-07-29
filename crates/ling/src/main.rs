@@ -365,7 +365,7 @@ struct InitArgs {
 
 #[derive(Debug, Args)]
 struct RequestArgs {
-    /// Product Secret used to authenticate this device-side request.
+    /// Product Secret. Required when the target app is not manageable by this account.
     #[arg(
         long = "product-secret",
         env = "LING_PRODUCT_SECRET",
@@ -1532,15 +1532,25 @@ async fn request_command(cli: &Ctx, args: RequestArgs, selector: AppSelector) ->
     let output_tts = args.output_tts;
     let output_tts_for_download = output_tts.clone();
     let request_output = RequestTimelineOutput::new(io::stdout().is_terminal() && !verbose);
-    let app = resolve_app(cli, selector).await?;
-    let secret = match normalize_product_secret(args.product_secret)? {
-        Some(secret) => secret,
-        None => {
-            let detail = get_app_detail(cli, &app).await?;
-            config_view::product_secret(&detail).context(
-                "应用详情未返回产品密钥。请由用户本人前往平台网页的应用详情复制 Secret，\
-                 然后在自己的终端中传入 --product-secret <secret>；不要把 Secret 发到对话或日志中",
-            )?
+    let supplied_secret = normalize_product_secret(args.product_secret)?;
+    let direct_product_id = supplied_secret
+        .as_ref()
+        .and_then(|_| direct_request_product_id(&selector));
+    let (product_id, secret) = match (direct_product_id, supplied_secret) {
+        (Some(product_id), Some(secret)) => (product_id, secret),
+        (_, supplied_secret) => {
+            let app = resolve_app(cli, selector).await?;
+            let secret = match supplied_secret {
+                Some(secret) => secret,
+                None => {
+                    let detail = get_app_detail(cli, &app).await?;
+                    config_view::product_secret(&detail).context(
+                        "应用详情未返回产品密钥。请由用户本人前往平台网页的应用详情复制 Secret，\
+                         然后在自己的终端中传入 --product-secret <secret>；不要把 Secret 发到对话或日志中",
+                    )?
+                }
+            };
+            (app.product_id, secret)
         }
     };
 
@@ -1574,7 +1584,7 @@ async fn request_command(cli: &Ctx, args: RequestArgs, selector: AppSelector) ->
     let started_at = Instant::now();
     let interaction_result = ling_plugin_app::request::interaction_request(
         &cli.api_base_url,
-        &app.product_id,
+        &product_id,
         &secret,
         &input,
         &opts,
@@ -3928,6 +3938,19 @@ fn normalize_product_secret(value: Option<String>) -> Result<Option<String>> {
     Ok(Some(secret))
 }
 
+fn direct_request_product_id(selector: &AppSelector) -> Option<String> {
+    if clean_identifier(selector.project_id.clone()).is_some()
+        || clean_identifier(selector.app_id.clone()).is_some()
+    {
+        return None;
+    }
+    clean_identifier(selector.product_id.clone()).or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .and_then(|cwd| ling_plugin_app_project::project::read_product_id(&cwd))
+    })
+}
+
 fn platform_write_unavailable(feature: &str) -> anyhow::Error {
     anyhow!(
         "「{feature}」的平台开放 API 尚未上线，请暂时在平台网页端操作：https://platform.listenai.com\n平台打通 API Key 授权链路后，ling 将在后续版本启用此命令。"
@@ -5111,6 +5134,34 @@ mod tests {
             normalize_product_secret(Some("  ".to_owned())).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn request_can_use_explicit_device_credentials_without_management_lookup() {
+        let selector = AppSelector {
+            product_id: Some("  product-1  ".to_owned()),
+            ..AppSelector::default()
+        };
+        assert_eq!(
+            direct_request_product_id(&selector).as_deref(),
+            Some("product-1")
+        );
+
+        for selector in [
+            AppSelector {
+                project_id: Some("project-1".to_owned()),
+                ..AppSelector::default()
+            },
+            AppSelector {
+                app_id: Some("app-1".to_owned()),
+                ..AppSelector::default()
+            },
+        ] {
+            assert!(
+                direct_request_product_id(&selector).is_none(),
+                "project and app ids still need management resolution"
+            );
+        }
     }
 
     #[test]

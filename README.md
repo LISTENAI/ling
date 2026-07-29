@@ -164,6 +164,9 @@ ling app --product-id <product_id> request \
   --product-secret '<product_secret>' --text 你好
 ```
 
+同时提供 Product ID 和 Product Secret 时，可直接模拟不属于当前登录账号的
+应用，不会先调用应用管理接口。
+
 查看协议帧或保存返回的 TTS：
 
 ```bash

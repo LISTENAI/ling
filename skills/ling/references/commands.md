@@ -212,6 +212,8 @@ enforce` 会连同当前状态一起给出入口。
 
 ```bash
 ling app --product-id <product_id> request --text 你好
+ling app --product-id <product_id> request \
+  --product-secret <product_secret> --text 你好
 ling app --product-id <product_id> request --file hello.pcm
 ling app --product-id <product_id> request --text 你好 --verbose
 ling app --product-id <product_id> request \
@@ -222,9 +224,11 @@ ling app trace <sid> --verbose
 ling app trace <sid> --json
 ```
 
-`request` 自行完成应用鉴权，不需要额外凭据参数。它不提供 `--json`：默认
-输出人类可读时间线，`--verbose` 逐行输出带方向的原始诊断事件。请求汇总和
-鉴权错误会显示实际 Device ID；`--device-id` 只覆盖本次请求。
+对于当前账号可管理的应用，`request` 自行取得鉴权信息。模拟无权管理的应用
+时，用户在自己的终端同时显式提供 Product ID 和完整 Product Secret，即可
+绕过应用管理查询直接模拟设备请求。它不提供 `--json`：默认输出人类可读
+时间线，`--verbose` 逐行输出带方向的原始诊断事件。请求汇总和鉴权错误会
+显示实际 Device ID；`--device-id` 只覆盖本次请求。
 `--llm-app` 只用于用户明确要求的定向诊断。
 
 默认时间线把 `initialize` 和 `tools/list` 折叠成工具数量和名称摘要；需要

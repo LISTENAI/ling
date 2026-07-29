@@ -53,7 +53,9 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 
 - 让用户本人在自己的终端运行 `ling login` 并输入 API Key；不要索取、
   代填、回显或记录完整密钥。
-- `ling app request` 会自行完成应用鉴权，不要要求用户提供额外凭据。
+- `ling app request` 默认会自行读取当前账号可管理应用的鉴权信息。模拟当前
+  账号无权管理的应用时，必须由用户本人在终端同时传入完整的
+  `--product-id` 和 `--product-secret`；不要索取或代填 Secret。
 - `inspect`、`request --verbose`、`trace --verbose/--json` 和
   `ai asr --verbose` 可能包含敏感应用信息、会话标识、对话、请求上下文或
   工具结果；展示和转述前先脱敏。
@@ -100,8 +102,12 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 
 ```bash
 ling app --product-id <product_id> request --text 你好
+ling app --product-id <product_id> request \
+  --product-secret <product_secret> --text 你好
 ```
 
+- 同时显式传入 Product ID 和 Product Secret 时，`request` 直接模拟设备
+  请求，不要求该应用属于当前登录账号。
 - 默认输出带时间和方向的双向事件摘要，MCP 的 `initialize` 和 `tools/list`
   折叠为工具数量和名称。
 - 只有需要逐事件排查时才使用 `--verbose`；分享输出前先脱敏。
