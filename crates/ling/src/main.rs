@@ -150,19 +150,19 @@ struct TtsArgs {
     #[arg(long = "sample-rate", value_parser = ["8000", "16000", "24000"])]
     sample_rate: Option<String>,
     /// Speed, 1-100 (default 50).
-    #[arg(long)]
+    #[arg(long, value_parser = percentage_parser())]
     speed: Option<u32>,
     /// Volume, 1-100 (default 50).
-    #[arg(long)]
+    #[arg(long, value_parser = percentage_parser())]
     volume: Option<u32>,
     /// Pitch, 1-100 (default 50).
-    #[arg(long)]
+    #[arg(long, value_parser = percentage_parser())]
     pitch: Option<u32>,
     /// smartTTS emotion (e.g. cheerful, sad, auto).
     #[arg(long)]
     emotion: Option<String>,
     /// smartTTS emotion scale, -20..=20.
-    #[arg(long = "emotion-scale")]
+    #[arg(long = "emotion-scale", value_parser = emotion_scale_parser())]
     emotion_scale: Option<i32>,
     /// smartTTS style.
     #[arg(long)]
@@ -184,6 +184,22 @@ fn tts_vcn_parser() -> clap::builder::PossibleValuesParser {
             .iter()
             .map(|voice| voice.value),
     )
+}
+
+fn page_parser() -> clap::builder::RangedI64ValueParser<u32> {
+    clap::value_parser!(u32).range(1..=1000)
+}
+
+fn page_size_parser() -> clap::builder::RangedI64ValueParser<u32> {
+    clap::value_parser!(u32).range(1..=100)
+}
+
+fn percentage_parser() -> clap::builder::RangedI64ValueParser<u32> {
+    clap::value_parser!(u32).range(1..=100)
+}
+
+fn emotion_scale_parser() -> clap::builder::RangedI64ValueParser<i32> {
+    clap::value_parser!(i32).range(-20..=20)
 }
 
 #[derive(Debug, Args)]
@@ -268,9 +284,11 @@ struct ResolvedApp {
 enum AppCommand {
     /// List platform apps.
     List {
-        #[arg(long, default_value_t = 1)]
+        /// Page number (1-1000).
+        #[arg(long, default_value_t = 1, value_parser = page_parser())]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 20)]
+        /// Items per page (1-100).
+        #[arg(long = "page-size", default_value_t = 20, value_parser = page_size_parser())]
         page_size: u32,
         /// Print the raw JSON response.
         #[arg(long)]
@@ -426,9 +444,11 @@ struct OtaArgs {
 enum OtaCommand {
     /// List OTA packages.
     List {
-        #[arg(long, default_value_t = 1)]
+        /// Page number (1-1000).
+        #[arg(long, default_value_t = 1, value_parser = page_parser())]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 20)]
+        /// Items per page (1-100).
+        #[arg(long = "page-size", default_value_t = 20, value_parser = page_size_parser())]
         page_size: u32,
         #[arg(long)]
         json: bool,
@@ -496,9 +516,11 @@ enum OtaCommand {
 #[derive(Debug, Subcommand)]
 enum OtaWhitelistCommand {
     List {
-        #[arg(long, default_value_t = 1)]
+        /// Page number (1-1000).
+        #[arg(long, default_value_t = 1, value_parser = page_parser())]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 20)]
+        /// Items per page (1-100).
+        #[arg(long = "page-size", default_value_t = 20, value_parser = page_size_parser())]
         page_size: u32,
         #[arg(long)]
         json: bool,
@@ -525,9 +547,11 @@ struct RoleArgs {
 enum RoleCommand {
     /// List roles of the app.
     List {
-        #[arg(long, default_value_t = 1)]
+        /// Page number (1-1000).
+        #[arg(long, default_value_t = 1, value_parser = page_parser())]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 20)]
+        /// Items per page (1-100).
+        #[arg(long = "page-size", default_value_t = 20, value_parser = page_size_parser())]
         page_size: u32,
         /// Print the raw JSON response.
         #[arg(long)]
@@ -602,9 +626,11 @@ struct AppWakewordArgs {
 enum WakewordCommand {
     /// List generated and system wake-up words.
     List {
-        #[arg(long, default_value_t = 1)]
+        /// Page number (1-1000).
+        #[arg(long, default_value_t = 1, value_parser = page_parser())]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 20)]
+        /// Items per page (1-100).
+        #[arg(long = "page-size", default_value_t = 20, value_parser = page_size_parser())]
         page_size: u32,
         #[arg(long)]
         json: bool,
@@ -682,9 +708,11 @@ struct AppKbArgs {
 enum AppKbCommand {
     /// List knowledge bases linked to the app.
     List {
-        #[arg(long, default_value_t = 1)]
+        /// Page number (1-1000).
+        #[arg(long, default_value_t = 1, value_parser = page_parser())]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 20)]
+        /// Items per page (1-100).
+        #[arg(long = "page-size", default_value_t = 20, value_parser = page_size_parser())]
         page_size: u32,
         /// Print the raw JSON response.
         #[arg(long)]
@@ -726,9 +754,11 @@ enum ChainCommand {
     },
     /// List uploaded custom Agent versions.
     Versions {
-        #[arg(long, default_value_t = 1)]
+        /// Page number (1-1000).
+        #[arg(long, default_value_t = 1, value_parser = page_parser())]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 20)]
+        /// Items per page (1-100).
+        #[arg(long = "page-size", default_value_t = 20, value_parser = page_size_parser())]
         page_size: u32,
         /// Print the raw JSON response.
         #[arg(long)]
@@ -763,9 +793,11 @@ enum ChainSetCommand {
 enum LexiconCommand {
     /// List domain lexicon entries.
     List {
-        #[arg(long, default_value_t = 1)]
+        /// Page number (1-1000).
+        #[arg(long, default_value_t = 1, value_parser = page_parser())]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 20)]
+        /// Items per page (1-100).
+        #[arg(long = "page-size", default_value_t = 20, value_parser = page_size_parser())]
         page_size: u32,
         /// Print the raw JSON response.
         #[arg(long)]
@@ -804,9 +836,11 @@ struct ToneArgs {
 enum ToneCommand {
     /// Show the prompt tone table.
     Show {
-        #[arg(long, default_value_t = 1)]
+        /// Page number (1-1000).
+        #[arg(long, default_value_t = 1, value_parser = page_parser())]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 20)]
+        /// Items per page (1-100).
+        #[arg(long = "page-size", default_value_t = 20, value_parser = page_size_parser())]
         page_size: u32,
         /// Print the raw JSON response.
         #[arg(long)]
@@ -839,9 +873,11 @@ struct McpArgs {
 enum McpCommand {
     /// List MCP servers.
     List {
-        #[arg(long, default_value_t = 1)]
+        /// Page number (1-1000).
+        #[arg(long, default_value_t = 1, value_parser = page_parser())]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 20)]
+        /// Items per page (1-100).
+        #[arg(long = "page-size", default_value_t = 20, value_parser = page_size_parser())]
         page_size: u32,
         #[arg(long)]
         json: bool,
@@ -958,9 +994,11 @@ struct KbArgs {
 enum KbCommand {
     /// List knowledge bases.
     List {
-        #[arg(long, default_value_t = 1)]
+        /// Page number (1-1000).
+        #[arg(long, default_value_t = 1, value_parser = page_parser())]
         page: u32,
-        #[arg(long, default_value_t = 20)]
+        /// Items per page (1-100).
+        #[arg(long, default_value_t = 20, value_parser = page_size_parser())]
         size: u32,
         /// Print the raw JSON response.
         #[arg(long)]
@@ -1005,9 +1043,11 @@ enum KbCommand {
 enum KbDocCommand {
     /// List documents.
     List {
-        #[arg(long, default_value_t = 1)]
+        /// Page number (1-1000).
+        #[arg(long, default_value_t = 1, value_parser = page_parser())]
         page: u32,
-        #[arg(long, default_value_t = 20)]
+        /// Items per page (1-100).
+        #[arg(long, default_value_t = 20, value_parser = page_size_parser())]
         size: u32,
         /// Print the raw JSON response.
         #[arg(long)]
@@ -5144,6 +5184,42 @@ mod tests {
     }
 
     #[test]
+    fn ai_tts_enforces_documented_numeric_ranges() {
+        for (flag, invalid_values) in [
+            ("--speed", &["0", "101", "4294967295"][..]),
+            ("--volume", &["0", "101", "4294967295"][..]),
+            ("--pitch", &["0", "101", "4294967295"][..]),
+            ("--emotion-scale", &["-21", "21", "2147483647"][..]),
+        ] {
+            for value in invalid_values {
+                let option = format!("{flag}={value}");
+                let error = Cli::try_parse_from(["ling", "ai", "tts", &option, "你好"])
+                    .expect_err("out-of-range TTS options should fail before the request");
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::ValueValidation,
+                    "{flag} accepted {value}"
+                );
+            }
+        }
+
+        Cli::try_parse_from([
+            "ling",
+            "ai",
+            "tts",
+            "--speed",
+            "1",
+            "--volume",
+            "100",
+            "--pitch",
+            "50",
+            "--emotion-scale=-20",
+            "你好",
+        ])
+        .expect("TTS range boundaries should be accepted");
+    }
+
+    #[test]
     fn ai_tts_list_vcn_needs_no_text() {
         let cli = Cli::try_parse_from(["ling", "ai", "tts", "--list-vcn"]).expect("parse");
         match cli.command {
@@ -5404,6 +5480,67 @@ mod tests {
             },
             other => panic!("expected app command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn paginated_commands_enforce_api_bounds() {
+        let commands: &[(&[&str], &str)] = &[
+            (&["app", "list"], "--page-size"),
+            (&["app", "ota", "list"], "--page-size"),
+            (&["app", "ota", "whitelist", "list"], "--page-size"),
+            (&["app", "role", "list"], "--page-size"),
+            (&["app", "wakeword", "list"], "--page-size"),
+            (&["app", "kb", "list"], "--page-size"),
+            (&["app", "chain", "versions"], "--page-size"),
+            (&["app", "lexicon", "list"], "--page-size"),
+            (&["app", "tone", "show"], "--page-size"),
+            (&["app", "mcp", "list"], "--page-size"),
+            (&["kb", "list"], "--size"),
+            (&["kb", "doc", "index-1", "list"], "--size"),
+        ];
+
+        for &(command, size_flag) in commands {
+            for page in ["0", "1001", "4294967295"] {
+                let mut args = vec!["ling"];
+                args.extend_from_slice(command);
+                args.extend_from_slice(&["--page", page]);
+                let error = match Cli::try_parse_from(args) {
+                    Ok(_) => panic!("{command:?} accepted page {page}"),
+                    Err(error) => error,
+                };
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::ValueValidation,
+                    "{command:?} returned the wrong error for page {page}"
+                );
+            }
+
+            for size in ["0", "101", "4294967295"] {
+                let mut args = vec!["ling"];
+                args.extend_from_slice(command);
+                args.extend_from_slice(&[size_flag, size]);
+                let error = match Cli::try_parse_from(args) {
+                    Ok(_) => panic!("{command:?} accepted {size_flag} {size}"),
+                    Err(error) => error,
+                };
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::ValueValidation,
+                    "{command:?} returned the wrong error for {size_flag} {size}"
+                );
+            }
+        }
+
+        Cli::try_parse_from([
+            "ling",
+            "app",
+            "list",
+            "--page",
+            "1000",
+            "--page-size",
+            "100",
+        ])
+        .expect("pagination upper bounds should be accepted");
     }
 
     #[test]

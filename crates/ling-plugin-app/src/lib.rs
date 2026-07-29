@@ -20,12 +20,23 @@ pub async fn list_projects(
 }
 
 fn projects_url(api_base_url: &str, page: u32, page_size: u32) -> Result<Url> {
+    validate_pagination(page, page_size)?;
     let mut url = ling_core::http_url(api_base_url, "/v1/projects")?;
     url.query_pairs_mut()
         .append_pair("page", &page.to_string())
         .append_pair("pageSize", &page_size.to_string())
         .append_pair("service_type", "device");
     Ok(url)
+}
+
+fn validate_pagination(page: u32, page_size: u32) -> Result<()> {
+    if !(1..=1000).contains(&page) {
+        anyhow::bail!("page 必须在 1 到 1000 之间");
+    }
+    if !(1..=100).contains(&page_size) {
+        anyhow::bail!("page-size 必须在 1 到 100 之间");
+    }
+    Ok(())
 }
 
 pub async fn list_all_projects(api_base_url: &str, api_key: &str) -> Result<Vec<Value>> {
@@ -62,12 +73,7 @@ pub async fn list_product_projects(
 }
 
 fn product_projects_page(projects: Vec<Value>, page: u32, page_size: u32) -> Result<Value> {
-    if page == 0 {
-        anyhow::bail!("page 必须大于等于 1");
-    }
-    if !(1..=100).contains(&page_size) {
-        anyhow::bail!("page-size 必须在 1 到 100 之间");
-    }
+    validate_pagination(page, page_size)?;
     let projects = projects
         .into_iter()
         .filter(has_product_id)
@@ -751,6 +757,18 @@ mod tests {
             url.as_str(),
             "https://api.listenai.com/base/v1/projects?page=2&pageSize=50&service_type=device"
         );
+    }
+
+    #[test]
+    fn project_list_rejects_out_of_range_pagination() {
+        for page in [0, 1001, u32::MAX] {
+            assert!(projects_url("https://api.listenai.com", page, 20).is_err());
+            assert!(product_projects_page(Vec::new(), page, 20).is_err());
+        }
+        for page_size in [0, 101, u32::MAX] {
+            assert!(projects_url("https://api.listenai.com", 1, page_size).is_err());
+            assert!(product_projects_page(Vec::new(), 1, page_size).is_err());
+        }
     }
 
     #[test]
