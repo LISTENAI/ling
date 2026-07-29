@@ -272,8 +272,6 @@ enum AppCommand {
         page: u32,
         #[arg(long = "page-size", default_value_t = 20)]
         page_size: u32,
-        #[arg(long = "service-type", value_parser = ["device", "api"])]
-        service_type: Option<String>,
         /// Print the raw JSON response.
         #[arg(long)]
         json: bool,
@@ -1303,7 +1301,6 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
         AppCommand::List {
             page,
             page_size,
-            service_type,
             json,
         } => {
             ensure_no_app_selector(&selector, "list")?;
@@ -1313,7 +1310,6 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
                 &api_key,
                 page,
                 page_size,
-                service_type.as_deref(),
             )
             .await?;
             if json {
@@ -1450,8 +1446,7 @@ async fn select_product_interactively(cli: &Ctx) -> Result<Option<String>> {
         return Ok(None);
     };
 
-    let output =
-        ling_plugin_app::list_product_projects(&cli.api_base_url, &api_key, 1, 50, None).await?;
+    let output = ling_plugin_app::list_product_projects(&cli.api_base_url, &api_key, 1, 50).await?;
     let projects = output
         .get("data")
         .and_then(Value::as_array)
@@ -3788,7 +3783,7 @@ async fn resolve_app(cli: &Ctx, mut selector: AppSelector) -> Result<ResolvedApp
             }
             Err(detail_error) => {
                 let projects =
-                    ling_plugin_app::list_all_projects(&cli.api_base_url, &api_key, None).await?;
+                    ling_plugin_app::list_all_projects(&cli.api_base_url, &api_key).await?;
                 let project = projects
                     .iter()
                     .find(|project| {
@@ -3806,8 +3801,7 @@ async fn resolve_app(cli: &Ctx, mut selector: AppSelector) -> Result<ResolvedApp
     }
 
     if let Some(app_id) = selector.app_id {
-        let projects =
-            ling_plugin_app::list_all_projects(&cli.api_base_url, &api_key, None).await?;
+        let projects = ling_plugin_app::list_all_projects(&cli.api_base_url, &api_key).await?;
         let project = projects
             .iter()
             .find(|project| {
@@ -3830,8 +3824,7 @@ async fn resolve_app(cli: &Ctx, mut selector: AppSelector) -> Result<ResolvedApp
             project_id,
         }),
         Err(resolve_error) => {
-            let projects =
-                ling_plugin_app::list_all_projects(&cli.api_base_url, &api_key, None).await?;
+            let projects = ling_plugin_app::list_all_projects(&cli.api_base_url, &api_key).await?;
             let project = projects
                 .iter()
                 .find(|project| {
@@ -5392,8 +5385,6 @@ mod tests {
             "2",
             "--page-size",
             "50",
-            "--service-type",
-            "device",
             "--json",
         ])
         .expect("parse app list");
@@ -5403,12 +5394,10 @@ mod tests {
                 AppCommand::List {
                     page,
                     page_size,
-                    service_type,
                     json,
                 } => {
                     assert_eq!(page, 2);
                     assert_eq!(page_size, 50);
-                    assert_eq!(service_type.as_deref(), Some("device"));
                     assert!(json);
                 }
                 other => panic!("expected app list command, got {other:?}"),
@@ -5467,10 +5456,10 @@ mod tests {
     }
 
     #[test]
-    fn app_service_type_rejects_unknown_value() {
-        let err = Cli::try_parse_from(["ling", "app", "list", "--service-type", "unknown"])
-            .expect_err("unknown service type should fail");
-        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+    fn app_service_type_option_is_gone() {
+        let err = Cli::try_parse_from(["ling", "app", "list", "--service-type", "device"])
+            .expect_err("app list should always target device apps");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]

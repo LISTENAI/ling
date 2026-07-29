@@ -14,30 +14,25 @@ pub async fn list_projects(
     api_key: &str,
     page: u32,
     page_size: u32,
-    service_type: Option<&str>,
 ) -> Result<Value> {
-    let mut url = ling_core::http_url(api_base_url, "/v1/projects")?;
-    {
-        let mut pairs = url.query_pairs_mut();
-        pairs.append_pair("page", &page.to_string());
-        pairs.append_pair("pageSize", &page_size.to_string());
-        if let Some(service_type) = service_type {
-            pairs.append_pair("service_type", service_type);
-        }
-    }
-
+    let url = projects_url(api_base_url, page, page_size)?;
     get_json(url, api_key).await
 }
 
-pub async fn list_all_projects(
-    api_base_url: &str,
-    api_key: &str,
-    service_type: Option<&str>,
-) -> Result<Vec<Value>> {
+fn projects_url(api_base_url: &str, page: u32, page_size: u32) -> Result<Url> {
+    let mut url = ling_core::http_url(api_base_url, "/v1/projects")?;
+    url.query_pairs_mut()
+        .append_pair("page", &page.to_string())
+        .append_pair("pageSize", &page_size.to_string())
+        .append_pair("service_type", "device");
+    Ok(url)
+}
+
+pub async fn list_all_projects(api_base_url: &str, api_key: &str) -> Result<Vec<Value>> {
     let mut page = 1;
     let mut projects = Vec::new();
     loop {
-        let output = list_projects(api_base_url, api_key, page, 100, service_type).await?;
+        let output = list_projects(api_base_url, api_key, page, 100).await?;
         let batch = output
             .get("data")
             .and_then(Value::as_array)
@@ -61,9 +56,8 @@ pub async fn list_product_projects(
     api_key: &str,
     page: u32,
     page_size: u32,
-    service_type: Option<&str>,
 ) -> Result<Value> {
-    let projects = list_all_projects(api_base_url, api_key, service_type).await?;
+    let projects = list_all_projects(api_base_url, api_key).await?;
     product_projects_page(projects, page, page_size)
 }
 
@@ -748,6 +742,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(page["data"][0]["id"], "project-2");
+    }
+
+    #[test]
+    fn project_list_url_always_targets_device_apps() {
+        let url = projects_url("https://api.listenai.com/base", 2, 50).unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://api.listenai.com/base/v1/projects?page=2&pageSize=50&service_type=device"
+        );
     }
 
     #[test]

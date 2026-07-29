@@ -47,7 +47,7 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 - 未显式给出时，先检查当前目录的 `listenai.toml`，使用其中的
   `product_id`。
 - 两者都没有时才运行 `ling app list`，不要替用户猜目标应用。
-- `ling app list` 只展示已关联 Product ID、可由 CLI 管理的应用。
+- `ling app list` 只展示已关联 Product ID、可由 CLI 管理的设备应用。
 
 ## 凭据与隐私
 
