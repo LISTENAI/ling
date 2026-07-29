@@ -706,7 +706,7 @@ dependencies = [
 
 [[package]]
 name = "ling"
-version = "0.2.0-beta.1"
+version = "0.2.0-beta.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -729,7 +729,7 @@ dependencies = [
 
 [[package]]
 name = "ling-core"
-version = "0.2.0-beta.1"
+version = "0.2.0-beta.2"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -738,7 +738,7 @@ dependencies = [
 
 [[package]]
 name = "ling-plugin-agent"
-version = "0.2.0-beta.1"
+version = "0.2.0-beta.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -753,7 +753,7 @@ dependencies = [
 
 [[package]]
 name = "ling-plugin-ai"
-version = "0.2.0-beta.1"
+version = "0.2.0-beta.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -769,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "ling-plugin-app"
-version = "0.2.0-beta.1"
+version = "0.2.0-beta.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -787,7 +787,7 @@ dependencies = [
 
 [[package]]
 name = "ling-plugin-app-project"
-version = "0.2.0-beta.1"
+version = "0.2.0-beta.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -803,7 +803,7 @@ dependencies = [
 
 [[package]]
 name = "ling-plugin-kb"
-version = "0.2.0-beta.1"
+version = "0.2.0-beta.2"
 dependencies = [
  "anyhow",
  "ling-core",
@@ -814,7 +814,7 @@ dependencies = [
 
 [[package]]
 name = "ling-plugin-wiki"
-version = "0.2.0-beta.1"
+version = "0.2.0-beta.2"
 dependencies = [
  "anyhow",
  "ling-core",
