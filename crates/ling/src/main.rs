@@ -138,10 +138,10 @@ struct ChatArgs {
 #[derive(Debug, Args)]
 struct TtsArgs {
     /// Text to synthesize. Multiple words are joined with spaces.
-    #[arg(required_unless_present = "list_vcn")]
+    #[arg(required = true)]
     text: Vec<String>,
-    /// Voice (VCN). Use --list-vcn to show names.
-    #[arg(long, value_parser = tts_vcn_parser())]
+    /// Platform voice identifier (VCN).
+    #[arg(long)]
     vcn: Option<String>,
     /// Audio format.
     #[arg(long, value_parser = ["mp3", "pcm"])]
@@ -170,20 +170,9 @@ struct TtsArgs {
     /// Also download the audio into a file.
     #[arg(short = 'o', long)]
     output: Option<PathBuf>,
-    /// List supported voices (VCN) instead of synthesizing.
-    #[arg(long = "list-vcn")]
-    list_vcn: bool,
     /// Print the result as JSON.
     #[arg(long)]
     json: bool,
-}
-
-fn tts_vcn_parser() -> clap::builder::PossibleValuesParser {
-    clap::builder::PossibleValuesParser::new(
-        ling_plugin_ai::SUPPORTED_VCNS
-            .iter()
-            .map(|voice| voice.value),
-    )
 }
 
 fn page_parser() -> clap::builder::RangedI64ValueParser<u32> {
@@ -1243,15 +1232,6 @@ async fn chat_command(api_base_url: &str, args: ChatArgs) -> Result<()> {
 }
 
 async fn tts_command(cli: &Ctx, args: TtsArgs) -> Result<()> {
-    if args.list_vcn {
-        let output = ling_plugin_ai::supported_vcns();
-        if args.json {
-            return print_json(&output);
-        }
-        println!("{}", ling_plugin_ai::render_vcns(&output)?);
-        return Ok(());
-    }
-
     let api_key = resolve_api_key()?;
     let opts = ling_plugin_ai::TtsOptions {
         vcn: args.vcn,
@@ -5182,7 +5162,7 @@ mod tests {
             "ai",
             "tts",
             "--vcn",
-            "x5_lingyuzhao_flow",
+            "account-authorized-custom-voice",
             "--format",
             "pcm",
             "-o",
@@ -5195,7 +5175,7 @@ mod tests {
             Command::Ai(ai) => match ai.command {
                 AiCommand::Tts(tts) => {
                     assert_eq!(tts.text, vec!["你好", "世界"]);
-                    assert_eq!(tts.vcn.as_deref(), Some("x5_lingyuzhao_flow"));
+                    assert_eq!(tts.vcn.as_deref(), Some("account-authorized-custom-voice"));
                     assert_eq!(tts.format.as_deref(), Some("pcm"));
                     assert_eq!(tts.output.as_deref(), Some(std::path::Path::new("out.pcm")));
                 }
@@ -5223,15 +5203,25 @@ mod tests {
     }
 
     #[test]
-    fn ai_tts_accepts_only_supported_vcns() {
-        for voice in ling_plugin_ai::SUPPORTED_VCNS {
-            Cli::try_parse_from(["ling", "ai", "tts", "--vcn", voice.value, "你好"])
-                .unwrap_or_else(|err| panic!("{} should be accepted: {err}", voice.value));
+    fn ai_tts_accepts_arbitrary_vcn_values() {
+        let cli = Cli::try_parse_from([
+            "ling",
+            "ai",
+            "tts",
+            "--vcn",
+            "account-authorized-custom-voice",
+            "你好",
+        ])
+        .expect("VCN availability belongs to the platform");
+        match cli.command {
+            Command::Ai(ai) => match ai.command {
+                AiCommand::Tts(tts) => {
+                    assert_eq!(tts.vcn.as_deref(), Some("account-authorized-custom-voice"));
+                }
+                other => panic!("expected ai tts command, got {other:?}"),
+            },
+            other => panic!("expected ai command, got {other:?}"),
         }
-
-        let err = Cli::try_parse_from(["ling", "ai", "tts", "--vcn", "x2_chongchong", "你好"])
-            .expect_err("unsupported voices should fail before the request");
-        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
     }
 
     #[test]
@@ -5271,15 +5261,10 @@ mod tests {
     }
 
     #[test]
-    fn ai_tts_list_vcn_needs_no_text() {
-        let cli = Cli::try_parse_from(["ling", "ai", "tts", "--list-vcn"]).expect("parse");
-        match cli.command {
-            Command::Ai(ai) => match ai.command {
-                AiCommand::Tts(tts) => assert!(tts.list_vcn),
-                other => panic!("expected ai tts command, got {other:?}"),
-            },
-            other => panic!("expected ai command, got {other:?}"),
-        }
+    fn ai_tts_list_vcn_is_removed() {
+        let error = Cli::try_parse_from(["ling", "ai", "tts", "--list-vcn"])
+            .expect_err("platform TTS does not expose voice discovery");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]
@@ -5297,7 +5282,7 @@ mod tests {
     }
 
     #[test]
-    fn ai_tts_requires_text_without_list_vcn() {
+    fn ai_tts_requires_text() {
         let err = Cli::try_parse_from(["ling", "ai", "tts"]).expect_err("text required");
         assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }

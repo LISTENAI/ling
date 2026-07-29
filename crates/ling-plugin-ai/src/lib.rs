@@ -13,7 +13,6 @@ use tokio_tungstenite::{
     },
     WebSocketStream,
 };
-use unicode_width::UnicodeWidthStr;
 
 const ASR_CHUNK_BYTES: usize = 1280 * 4; // 160ms of 16k 16bit mono PCM per frame
 const ASR_CHUNK_PACE_MS: u64 = 40; // 4x realtime upload pacing; blasting breaks server-side init
@@ -21,35 +20,6 @@ const ASR_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const ASR_CONTROL_TIMEOUT: Duration = Duration::from_secs(15);
 const ASR_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 const ASR_RESULT_TIMEOUT: Duration = Duration::from_secs(60);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SupportedVcn {
-    pub name: &'static str,
-    pub value: &'static str,
-}
-
-pub const SUPPORTED_VCNS: &[SupportedVcn] = &[
-    SupportedVcn {
-        name: "聆玉昭pro",
-        value: "x5_lingyuzhao_flow",
-    },
-    SupportedVcn {
-        name: "聆小璇pro",
-        value: "x5_lingxiaoxuan_flow",
-    },
-    SupportedVcn {
-        name: "聆玉言pro",
-        value: "x5_lingyuyan_flow",
-    },
-    SupportedVcn {
-        name: "聆飞逸pro",
-        value: "x5_lingfeiyi_flow",
-    },
-    SupportedVcn {
-        name: "聆小玥pro",
-        value: "x5_lingxiaoyue_flow",
-    },
-];
 
 #[derive(Debug, Clone, Default)]
 pub struct TtsOptions {
@@ -231,44 +201,6 @@ fn save_audio(path: &Path, bytes: &[u8]) -> Result<(String, u64)> {
     }
     std::fs::write(path, bytes).with_context(|| format!("写入音频文件失败：{}", path.display()))?;
     Ok((path.display().to_string(), bytes.len() as u64))
-}
-
-pub fn supported_vcns() -> Value {
-    json!({
-        "code": 0,
-        "data": SUPPORTED_VCNS
-            .iter()
-            .map(|voice| json!({"name": voice.name, "value": voice.value}))
-            .collect::<Vec<_>>()
-    })
-}
-
-pub fn render_vcns(value: &Value) -> Result<String> {
-    let list = value
-        .get("data")
-        .and_then(Value::as_array)
-        .context("发音人列表响应缺少 data 数组")?;
-    if list.is_empty() {
-        return Ok("暂无可用发音人。".to_owned());
-    }
-    let rows = list
-        .iter()
-        .map(|item| {
-            vec![
-                item.get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("-")
-                    .to_owned(),
-                item.get("value")
-                    .and_then(Value::as_str)
-                    .unwrap_or("-")
-                    .to_owned(),
-            ]
-        })
-        .collect::<Vec<_>>();
-    let mut output = render_table(&["名称", "VCN"], &rows);
-    output.push_str(&format!("\n共 {} 个发音人。", rows.len()));
-    Ok(output)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -646,61 +578,6 @@ fn extract_wav_pcm(bytes: &[u8]) -> Result<Vec<u8>> {
     Ok(data.to_vec())
 }
 
-fn render_table(headers: &[&str], rows: &[Vec<String>]) -> String {
-    let mut widths = headers
-        .iter()
-        .map(|header| UnicodeWidthStr::width(*header))
-        .collect::<Vec<_>>();
-    for row in rows {
-        for (index, cell) in row.iter().enumerate() {
-            widths[index] = widths[index].max(UnicodeWidthStr::width(cell.as_str()));
-        }
-    }
-    let border = |left: &str, join: &str, right: &str| {
-        format!(
-            "{}{}{}",
-            left,
-            widths
-                .iter()
-                .map(|width| "─".repeat(width + 2))
-                .collect::<Vec<_>>()
-                .join(join),
-            right
-        )
-    };
-    let row_line = |cells: &[String]| {
-        format!(
-            "│ {} │",
-            cells
-                .iter()
-                .zip(widths.iter())
-                .map(|(cell, width)| format!(
-                    "{}{}",
-                    cell,
-                    " ".repeat(width - UnicodeWidthStr::width(cell.as_str()))
-                ))
-                .collect::<Vec<_>>()
-                .join(" │ ")
-        )
-    };
-
-    let mut output = String::new();
-    output.push_str(&border("╭", "┬", "╮"));
-    output.push('\n');
-    output.push_str(&row_line(
-        &headers.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-    ));
-    output.push('\n');
-    output.push_str(&border("├", "┼", "┤"));
-    for row in rows {
-        output.push('\n');
-        output.push_str(&row_line(row));
-    }
-    output.push('\n');
-    output.push_str(&border("╰", "┴", "╯"));
-    output
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -927,7 +804,7 @@ mod tests {
     #[test]
     fn tts_payload_includes_options() {
         let opts = TtsOptions {
-            vcn: Some("x5_lingyuzhao_flow".into()),
+            vcn: Some("account-authorized-custom-voice".into()),
             format: Some("pcm".into()),
             sample_rate: Some(16000),
             speed: Some(60),
@@ -938,7 +815,7 @@ mod tests {
             style: None,
         };
         let payload = tts_init_payload(&opts);
-        assert_eq!(payload["vcn"], "x5_lingyuzhao_flow");
+        assert_eq!(payload["vcn"], "account-authorized-custom-voice");
         assert_eq!(payload["format"], "pcm");
         assert_eq!(payload["auf"], "audio/L16;rate=16000");
         assert_eq!(payload["speed"], 60);
@@ -953,17 +830,5 @@ mod tests {
         assert!(err.contains("0 bytes"));
         assert!(err.contains("可能不支持所选参数"));
         validate_audio(&[1]).expect("non-empty audio should be accepted");
-    }
-
-    #[test]
-    fn renders_vcn_table() {
-        let value = supported_vcns();
-        let out = render_vcns(&value).unwrap();
-        for voice in SUPPORTED_VCNS {
-            assert!(out.contains(voice.name));
-            assert!(out.contains(voice.value));
-        }
-        assert!(out.contains("共 5 个发音人"));
-        assert!(!out.contains("x2_chongchong"));
     }
 }

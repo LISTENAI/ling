@@ -28,9 +28,8 @@ ling ai chat "解释 RAG" --stream
 ling ai chat "解释 RAG" --json
 
 ling ai tts 你好
-ling ai tts --vcn x5_lingyuzhao_flow --speed 60 你好
+ling ai tts --vcn <vcn> --speed 60 你好
 ling ai tts --format pcm --sample-rate 16000 -o hello.pcm 你好
-ling ai tts --list-vcn
 
 ling ai asr hello.pcm
 ling ai asr hello.wav --vad-eos 800
@@ -38,9 +37,11 @@ ling ai asr hello.wav --verbose
 ling ai asr hello.pcm --json
 ```
 
-用 `ling ai tts --list-vcn` 查看支持的发音人。TTS 返回 0 字节音频时应当报错，
-不要把 URL 或空文件作为成功结果交付。`--speed`、`--volume` 和 `--pitch`
-范围均为 `1..=100`；`--emotion-scale` 范围为 `-20..=20`。
+`ling ai tts` 不提供发音人列表，也不在本地限定 `--vcn` 的取值；使用用户
+明确提供的 VCN，由平台根据 API Key 权限和发音人是否存在决定能否合成。
+TTS 返回 0 字节音频时应当报错，不要把 URL 或空文件作为成功结果交付。
+`--speed`、`--volume` 和 `--pitch` 范围均为 `1..=100`；
+`--emotion-scale` 范围为 `-20..=20`。
 
 ASR 音频应为 16kHz、16bit LE、单声道 PCM；WAV 会先校验格式。识别卡住、
 超时或服务端报错时使用 `--verbose` 查看上下行控制帧和音频帧摘要；最终文本

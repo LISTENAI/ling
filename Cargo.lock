@@ -763,7 +763,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
- "unicode-width",
  "url",
 ]
 
