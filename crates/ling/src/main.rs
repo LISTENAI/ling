@@ -199,6 +199,9 @@ struct AsrArgs {
     /// Enable LLM-based VAD.
     #[arg(long = "asr-vad")]
     asr_vad: bool,
+    /// Show every ASR control frame and audio frame summary.
+    #[arg(long)]
+    verbose: bool,
     /// Print the result as JSON.
     #[arg(long)]
     json: bool,
@@ -1156,10 +1159,17 @@ async fn asr_command(api_base_url: &str, args: AsrArgs) -> Result<()> {
         ent: args.ent,
         asr_vad: args.asr_vad,
     };
-    let show_partial = io::stderr().is_terminal();
-    let text = ling_plugin_ai::asr(api_base_url, &api_key, &audio, &opts, |partial| {
-        if show_partial {
-            eprintln!("… {partial}");
+    let verbose = args.verbose;
+    let show_partial = io::stderr().is_terminal() && !verbose;
+    let text = ling_plugin_ai::asr(api_base_url, &api_key, &audio, &opts, |event| {
+        if verbose {
+            if let Some(line) = ling_plugin_ai::render_asr_verbose_event(&event) {
+                eprintln!("{line}");
+            }
+        } else if show_partial {
+            if let ling_plugin_ai::AsrEvent::Partial { text } = event {
+                eprintln!("… {text}");
+            }
         }
     })
     .await?;
@@ -4557,6 +4567,23 @@ mod tests {
                     assert_eq!(tts.output.as_deref(), Some(std::path::Path::new("out.pcm")));
                 }
                 other => panic!("expected ai tts command, got {other:?}"),
+            },
+            other => panic!("expected ai command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ai_asr_accepts_verbose_diagnostics() {
+        let cli = Cli::try_parse_from(["ling", "ai", "asr", "input.wav", "--verbose", "--json"])
+            .expect("parse ai asr diagnostics");
+        match cli.command {
+            Command::Ai(ai) => match ai.command {
+                AiCommand::Asr(asr) => {
+                    assert!(asr.verbose);
+                    assert!(asr.json);
+                    assert_eq!(asr.file, std::path::Path::new("input.wav"));
+                }
+                other => panic!("expected ai asr command, got {other:?}"),
             },
             other => panic!("expected ai command, got {other:?}"),
         }

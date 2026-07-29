@@ -1,16 +1,26 @@
 use anyhow::{anyhow, bail, Context, Result};
-use base64::Engine;
+use chrono::Local;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Map, Value};
-use std::path::Path;
+use std::{path::Path, time::Duration};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::{
     connect_async,
-    tungstenite::{client::IntoClientRequest, http::header, Message},
+    tungstenite::{
+        client::IntoClientRequest,
+        http::{header, Request},
+        Message,
+    },
+    WebSocketStream,
 };
 use unicode_width::UnicodeWidthStr;
 
 const ASR_CHUNK_BYTES: usize = 1280 * 4; // 160ms of 16k 16bit mono PCM per frame
 const ASR_CHUNK_PACE_MS: u64 = 40; // 4x realtime upload pacing; blasting breaks server-side init
+const ASR_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const ASR_CONTROL_TIMEOUT: Duration = Duration::from_secs(15);
+const ASR_SEND_TIMEOUT: Duration = Duration::from_secs(15);
+const ASR_RESULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SupportedVcn {
@@ -271,32 +281,81 @@ pub struct AsrOptions {
     pub asr_vad: bool,
 }
 
-/// 通过 wss /v2/asr（云云对接，Bearer API Key）识别一段 16k 16bit LE 单声道 PCM。
-/// on_partial 用于输出中间识别结果；返回最终识别文本。
-pub async fn asr(
-    api_base_url: &str,
-    api_key: &str,
-    audio: &[u8],
-    opts: &AsrOptions,
-    mut on_partial: impl FnMut(&str),
-) -> Result<String> {
-    let mut param = Map::new();
-    param.insert("aue".into(), json!("raw"));
-    if let Some(vad_eos) = opts.vad_eos {
-        param.insert("vad_eos".into(), json!(vad_eos));
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsrDirection {
+    Upstream,
+    Downstream,
+}
+
+impl AsrDirection {
+    fn marker(self) -> &'static str {
+        match self {
+            Self::Upstream => "↑",
+            Self::Downstream => "↓",
+        }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AsrEvent {
+    Frame {
+        direction: AsrDirection,
+        body: String,
+    },
+    Binary {
+        direction: AsrDirection,
+        bytes: usize,
+    },
+    Partial {
+        text: String,
+    },
+}
+
+pub fn render_asr_verbose_event(event: &AsrEvent) -> Option<String> {
+    let time = Local::now().format("%H:%M:%S%.3f");
+    match event {
+        AsrEvent::Frame { direction, body } => {
+            Some(format!("[{time}] {} {body}", direction.marker()))
+        }
+        AsrEvent::Binary { direction, bytes } => Some(format!(
+            "[{time}] {} BINARY {bytes} bytes",
+            direction.marker()
+        )),
+        AsrEvent::Partial { .. } => None,
+    }
+}
+
+fn asr_start_payload(opts: &AsrOptions) -> Value {
+    let mut asr_properties = Map::new();
     if let Some(ent) = &opts.ent {
-        param.insert("ent".into(), json!(ent));
+        asr_properties.insert("ent".into(), json!(ent));
+    }
+
+    let mut vad_properties = Map::new();
+    if let Some(vad_eos) = opts.vad_eos {
+        vad_properties.insert("vad_eos".into(), json!(vad_eos));
     }
     if opts.asr_vad {
-        param.insert("asr_vad".into(), json!("1"));
+        vad_properties.insert("vad_model".into(), json!("v2"));
     }
-    let param = base64::engine::general_purpose::STANDARD.encode(Value::Object(param).to_string());
 
-    let mut url = ling_core::ws_url(api_base_url, "/v2/asr")?;
-    // 服务端不对 query 做 urldecode，base64 需原样拼接（不能百分号转义 = / +）
-    url.set_query(Some(&format!("param={param}")));
+    json!({
+        "action": "start",
+        "params": {
+            "data_type": "audio",
+            "aue": "raw",
+            "asr_properties": asr_properties,
+            "vad_properties": vad_properties,
+            "wake_properties": {
+                "words": []
+            },
+            "vpr_properties": {}
+        }
+    })
+}
 
+fn asr_request(api_base_url: &str, api_key: &str) -> Result<Request<()>> {
+    let url = ling_core::ws_url(api_base_url, "/v2/asr")?;
     let mut request = url
         .as_str()
         .into_client_request()
@@ -307,114 +366,241 @@ pub async fn asr(
             .parse()
             .context("API Key 含有非法字符")?,
     );
+    Ok(request)
+}
 
-    let (mut ws, _) = connect_async(request)
+fn asr_error(frame: &Value, stage: &str) -> anyhow::Error {
+    let code = frame.get("code").map_or_else(
+        || "-".to_owned(),
+        |code| {
+            code.as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| code.to_string())
+        },
+    );
+    let desc = frame.get("desc").and_then(Value::as_str).unwrap_or("-");
+    anyhow!("{stage}失败：code={code} {desc}")
+}
+
+async fn send_asr_text<S>(
+    ws: &mut WebSocketStream<S>,
+    body: String,
+    on_event: &mut impl FnMut(AsrEvent),
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    on_event(AsrEvent::Frame {
+        direction: AsrDirection::Upstream,
+        body: body.clone(),
+    });
+    tokio::time::timeout(ASR_SEND_TIMEOUT, ws.send(Message::Text(body)))
         .await
-        .context("ASR WebSocket 连接失败")?;
+        .context("发送 ASR 控制帧超时")?
+        .context("发送 ASR 控制帧失败")
+}
 
-    // 等待 connected 帧
-    loop {
-        match ws.next().await {
-            Some(Ok(Message::Text(body))) => {
-                let frame: Value = serde_json::from_str(&body).context("ASR 响应不是合法 JSON")?;
-                match frame.get("action").and_then(Value::as_str) {
-                    Some("connected") => break,
-                    Some("error") => bail!(
-                        "ASR 连接失败：code={} {}",
-                        frame.get("code").and_then(Value::as_str).unwrap_or("-"),
-                        frame.get("desc").and_then(Value::as_str).unwrap_or("-")
-                    ),
-                    _ => continue,
-                }
-            }
-            Some(Ok(Message::Close(frame))) => bail!("ASR 服务提前关闭连接：{frame:?}"),
-            Some(Ok(_)) => continue,
-            Some(Err(err)) => return Err(anyhow!(err).context("读取 ASR 连接响应失败")),
-            None => bail!("ASR 服务未返回连接响应"),
-        }
-    }
-
-    for chunk in audio.chunks(ASR_CHUNK_BYTES) {
-        ws.send(Message::Binary(chunk.to_vec()))
-            .await
-            .context("上传音频数据失败")?;
-        tokio::time::sleep(std::time::Duration::from_millis(ASR_CHUNK_PACE_MS)).await;
-    }
-    ws.send(Message::Text(json!({"action": "end"}).to_string()))
-        .await
-        .context("发送上传结束指令失败")?;
-
-    let mut final_text: Option<String> = None;
-    while let Some(message) = ws.next().await {
-        let body = match message {
-            Ok(Message::Text(body)) => body,
-            Ok(Message::Close(_)) => break,
-            Ok(_) => continue,
-            Err(_) => break,
-        };
-        let frame: Value = match serde_json::from_str(&body) {
-            Ok(frame) => frame,
-            Err(_) => continue,
-        };
-        match frame.get("action").and_then(Value::as_str) {
-            Some("result") => {
-                let data = frame.get("data").cloned().unwrap_or(Value::Null);
-                if data.get("sub").and_then(Value::as_str) == Some("iat") {
-                    let text = data
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_owned();
-                    if data
-                        .get("is_last")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                    {
-                        // 最终结果即会话结束；部分环境不会及时下发 finish/关闭帧，直接返回
-                        final_text = Some(text);
-                        break;
-                    } else {
-                        on_partial(&text);
+async fn wait_for_asr_action<S>(
+    ws: &mut WebSocketStream<S>,
+    expected: &str,
+    stage: &str,
+    on_event: &mut impl FnMut(AsrEvent),
+) -> Result<Value>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    tokio::time::timeout(ASR_CONTROL_TIMEOUT, async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Text(body))) => {
+                    on_event(AsrEvent::Frame {
+                        direction: AsrDirection::Downstream,
+                        body: body.clone(),
+                    });
+                    let frame: Value =
+                        serde_json::from_str(&body).context("ASR 响应不是合法 JSON")?;
+                    match frame.get("action").and_then(Value::as_str) {
+                        Some(action) if action == expected => return Ok(frame),
+                        Some("error") => return Err(asr_error(&frame, stage)),
+                        _ => continue,
                     }
                 }
+                Some(Ok(Message::Close(frame))) => {
+                    bail!("{stage}前服务端关闭连接：{frame:?}")
+                }
+                Some(Ok(_)) => continue,
+                Some(Err(err)) => {
+                    return Err(anyhow!(err).context(format!("读取 ASR {stage}响应失败")))
+                }
+                None => bail!("{stage}前 ASR 连接已结束"),
             }
-            Some("finish") => break,
-            Some("error") => bail!(
-                "ASR 识别失败：code={} {}",
-                frame
-                    .get("code")
-                    .map(|code| code.to_string())
-                    .unwrap_or_else(|| "-".into()),
-                frame.get("desc").and_then(Value::as_str).unwrap_or("-")
-            ),
-            _ => continue,
         }
-    }
+    })
+    .await
+    .with_context(|| {
+        format!(
+            "等待 ASR {stage}超时（{} 秒）",
+            ASR_CONTROL_TIMEOUT.as_secs()
+        )
+    })?
+}
 
-    final_text.context("未收到最终识别结果")
+async fn receive_asr_result<S>(
+    ws: &mut WebSocketStream<S>,
+    on_event: &mut impl FnMut(AsrEvent),
+) -> Result<String>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    tokio::time::timeout(ASR_RESULT_TIMEOUT, async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Text(body))) => {
+                    on_event(AsrEvent::Frame {
+                        direction: AsrDirection::Downstream,
+                        body: body.clone(),
+                    });
+                    let frame: Value =
+                        serde_json::from_str(&body).context("ASR 响应不是合法 JSON")?;
+                    match frame.get("action").and_then(Value::as_str) {
+                        Some("result") => {
+                            let data = frame.get("data").cloned().unwrap_or(Value::Null);
+                            if data.get("sub").and_then(Value::as_str) != Some("iat") {
+                                continue;
+                            }
+                            let text = data
+                                .get("text")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_owned();
+                            if data
+                                .get("is_last")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false)
+                            {
+                                return Ok(text);
+                            }
+                            on_event(AsrEvent::Partial { text });
+                        }
+                        Some("finish") => bail!("ASR 会话结束但未返回最终识别结果"),
+                        Some("error") => return Err(asr_error(&frame, "ASR 识别")),
+                        _ => continue,
+                    }
+                }
+                Some(Ok(Message::Close(frame))) => {
+                    bail!("ASR 服务在最终结果前关闭连接：{frame:?}")
+                }
+                Some(Ok(_)) => continue,
+                Some(Err(err)) => return Err(anyhow!(err).context("读取 ASR 识别结果失败")),
+                None => bail!("ASR 连接结束但未返回最终识别结果"),
+            }
+        }
+    })
+    .await
+    .with_context(|| {
+        format!(
+            "等待 ASR 最终识别结果超时（{} 秒）",
+            ASR_RESULT_TIMEOUT.as_secs()
+        )
+    })?
+}
+
+async fn run_asr_session<S>(
+    ws: &mut WebSocketStream<S>,
+    audio: &[u8],
+    opts: &AsrOptions,
+    on_event: &mut impl FnMut(AsrEvent),
+) -> Result<String>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    wait_for_asr_action(ws, "connected", "连接", on_event).await?;
+
+    send_asr_text(ws, asr_start_payload(opts).to_string(), on_event).await?;
+    wait_for_asr_action(ws, "started", "会话创建", on_event).await?;
+
+    for chunk in audio.chunks(ASR_CHUNK_BYTES) {
+        tokio::time::timeout(ASR_SEND_TIMEOUT, ws.send(Message::Binary(chunk.to_vec())))
+            .await
+            .context("上传 ASR 音频超时")?
+            .context("上传音频数据失败")?;
+        on_event(AsrEvent::Binary {
+            direction: AsrDirection::Upstream,
+            bytes: chunk.len(),
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(ASR_CHUNK_PACE_MS)).await;
+    }
+    send_asr_text(ws, json!({"action": "end"}).to_string(), on_event).await?;
+
+    receive_asr_result(ws, on_event).await
+}
+
+/// 通过 wss /v2/asr 识别一段 16k 16bit LE 单声道 PCM。
+pub async fn asr(
+    api_base_url: &str,
+    api_key: &str,
+    audio: &[u8],
+    opts: &AsrOptions,
+    mut on_event: impl FnMut(AsrEvent),
+) -> Result<String> {
+    let request = asr_request(api_base_url, api_key)?;
+    let (mut ws, _) = tokio::time::timeout(ASR_CONNECT_TIMEOUT, connect_async(request))
+        .await
+        .with_context(|| {
+            format!(
+                "ASR WebSocket 连接超时（{} 秒）",
+                ASR_CONNECT_TIMEOUT.as_secs()
+            )
+        })?
+        .context("ASR WebSocket 连接失败")?;
+
+    run_asr_session(&mut ws, audio, opts, &mut on_event).await
 }
 
 /// 读取音频文件。WAV 会校验为 16k 16bit LE 单声道并剥离头部；其余按 raw PCM 处理。
 pub fn load_pcm_audio(path: &Path) -> Result<Vec<u8>> {
     let bytes =
         std::fs::read(path).with_context(|| format!("读取音频文件失败：{}", path.display()))?;
-    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+    let has_wav_header = bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE";
+    let has_wav_extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("wav"));
+    if has_wav_header {
         extract_wav_pcm(&bytes)
+    } else if has_wav_extension {
+        bail!("WAV 文件头无效：{}", path.display())
+    } else if bytes.len() % 2 != 0 {
+        bail!("裸 PCM 文件不是完整的 16bit 采样：{}", path.display())
     } else {
         Ok(bytes)
     }
 }
 
 fn extract_wav_pcm(bytes: &[u8]) -> Result<Vec<u8>> {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        bail!("WAV 文件头无效");
+    }
+    let riff_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let riff_end = riff_size.checked_add(8).context("WAV RIFF 长度溢出")?;
+    if riff_end > bytes.len() {
+        bail!("WAV RIFF 块不完整");
+    }
+
     let mut pos = 12usize;
     let mut format_ok = false;
     let mut data: Option<&[u8]> = None;
 
-    while pos + 8 <= bytes.len() {
+    while pos + 8 <= riff_end {
         let chunk_id = &bytes[pos..pos + 4];
         let chunk_size = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap()) as usize;
         let body_start = pos + 8;
-        let body_end = (body_start + chunk_size).min(bytes.len());
+        let body_end = body_start
+            .checked_add(chunk_size)
+            .context("WAV chunk 长度溢出")?;
+        if body_end > riff_end {
+            bail!("WAV {} 块不完整", String::from_utf8_lossy(chunk_id).trim());
+        }
 
         match chunk_id {
             b"fmt " => {
@@ -425,10 +611,18 @@ fn extract_wav_pcm(bytes: &[u8]) -> Result<Vec<u8>> {
                 let audio_format = u16::from_le_bytes(body[0..2].try_into().unwrap());
                 let channels = u16::from_le_bytes(body[2..4].try_into().unwrap());
                 let sample_rate = u32::from_le_bytes(body[4..8].try_into().unwrap());
+                let byte_rate = u32::from_le_bytes(body[8..12].try_into().unwrap());
+                let block_align = u16::from_le_bytes(body[12..14].try_into().unwrap());
                 let bits = u16::from_le_bytes(body[14..16].try_into().unwrap());
-                if audio_format != 1 || channels != 1 || sample_rate != 16000 || bits != 16 {
+                if audio_format != 1
+                    || channels != 1
+                    || sample_rate != 16000
+                    || bits != 16
+                    || byte_rate != 32_000
+                    || block_align != 2
+                {
                     bail!(
-                        "WAV 格式不符合要求（需 PCM 16kHz 16bit 单声道），实际：format={audio_format} channels={channels} rate={sample_rate} bits={bits}"
+                        "WAV 格式不符合要求（需 PCM 16kHz 16bit 单声道），实际：format={audio_format} channels={channels} rate={sample_rate} bits={bits} byte_rate={byte_rate} block_align={block_align}"
                     );
                 }
                 format_ok = true;
@@ -446,6 +640,9 @@ fn extract_wav_pcm(bytes: &[u8]) -> Result<Vec<u8>> {
         bail!("WAV 文件缺少 fmt 块");
     }
     let data = data.context("WAV 文件缺少 data 块")?;
+    if data.len() % 2 != 0 {
+        bail!("WAV data 块不是完整的 16bit PCM 采样");
+    }
     Ok(data.to_vec())
 }
 
@@ -507,6 +704,7 @@ fn render_table(headers: &[&str], rows: &[Vec<String>]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio_tungstenite::tungstenite::protocol::Role;
 
     fn wav_header(format: u16, channels: u16, rate: u32, bits: u16, data: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -547,6 +745,183 @@ mod tests {
     fn rejects_stereo() {
         let wav = wav_header(1, 2, 16000, 16, &[0u8; 4]);
         assert!(extract_wav_pcm(&wav).is_err());
+    }
+
+    #[test]
+    fn rejects_non_pcm_and_wrong_bit_depth() {
+        let float_wav = wav_header(3, 1, 16000, 32, &[0u8; 8]);
+        assert!(extract_wav_pcm(&float_wav).is_err());
+
+        let pcm_24bit = wav_header(1, 1, 16000, 24, &[0u8; 6]);
+        assert!(extract_wav_pcm(&pcm_24bit).is_err());
+    }
+
+    #[test]
+    fn rejects_truncated_or_partial_wav_samples() {
+        let mut truncated = wav_header(1, 1, 16000, 16, &[0u8; 4]);
+        truncated.pop();
+        assert!(extract_wav_pcm(&truncated).is_err());
+
+        let partial_sample = wav_header(1, 1, 16000, 16, &[0u8; 3]);
+        assert!(extract_wav_pcm(&partial_sample).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_header_for_wav_extension() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "ling-asr-invalid-{}-{unique}.wav",
+            std::process::id()
+        ));
+        std::fs::write(&path, [0u8; 32]).expect("write invalid WAV");
+        let result = load_pcm_audio(&path);
+        std::fs::remove_file(&path).expect("remove invalid WAV");
+        assert!(result
+            .expect_err("invalid WAV header must fail")
+            .to_string()
+            .contains("文件头无效"));
+    }
+
+    #[test]
+    fn builds_v2_start_payload_from_asr_options() {
+        let payload = asr_start_payload(&AsrOptions {
+            vad_eos: Some(800),
+            ent: Some("home-va".into()),
+            asr_vad: true,
+        });
+        assert_eq!(payload["action"], "start");
+        assert_eq!(payload["params"]["data_type"], "audio");
+        assert_eq!(payload["params"]["aue"], "raw");
+        assert_eq!(payload["params"]["asr_properties"]["ent"], "home-va");
+        assert_eq!(payload["params"]["vad_properties"]["vad_eos"], 800);
+        assert_eq!(payload["params"]["vad_properties"]["vad_model"], "v2");
+        assert_eq!(payload["params"]["wake_properties"]["words"], json!([]));
+    }
+
+    #[test]
+    fn builds_v2_asr_request_with_bearer_auth() {
+        let request =
+            asr_request("https://api.example.com", "test-key").expect("build ASR request");
+        assert_eq!(request.uri().to_string(), "wss://api.example.com/v2/asr");
+        assert_eq!(
+            request
+                .headers()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer test-key")
+        );
+    }
+
+    #[tokio::test]
+    async fn runs_complete_v2_asr_session() {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (mut client, mut ws) = tokio::join!(
+            WebSocketStream::from_raw_socket(client_io, Role::Client, None),
+            WebSocketStream::from_raw_socket(server_io, Role::Server, None),
+        );
+        let server = tokio::spawn(async move {
+            ws.send(Message::Text(
+                json!({
+                    "action": "connected",
+                    "code": "0",
+                    "cid": "cid-test"
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("send connected");
+
+            let start = ws.next().await.expect("start frame").expect("read start");
+            let Message::Text(start) = start else {
+                panic!("expected ASR start text frame");
+            };
+            let start: Value = serde_json::from_str(&start).expect("parse start");
+            assert_eq!(start["action"], "start");
+            assert_eq!(start["params"]["aue"], "raw");
+
+            ws.send(Message::Text(
+                json!({
+                    "action": "started",
+                    "code": "0",
+                    "sid": "sid-test"
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("send started");
+
+            let mut uploaded = Vec::new();
+            loop {
+                match ws.next().await.expect("client frame").expect("read client") {
+                    Message::Binary(bytes) => uploaded.extend_from_slice(&bytes),
+                    Message::Text(body) => {
+                        let frame: Value = serde_json::from_str(&body).expect("parse end");
+                        assert_eq!(frame["action"], "end");
+                        break;
+                    }
+                    other => panic!("unexpected ASR client frame: {other:?}"),
+                }
+            }
+            assert_eq!(uploaded, vec![7u8; 6_000]);
+
+            ws.send(Message::Text(
+                json!({
+                    "action": "result",
+                    "code": "0",
+                    "data": {
+                        "sub": "iat",
+                        "is_last": false,
+                        "text": "你好"
+                    },
+                    "sid": "sid-test"
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("send partial");
+            ws.send(Message::Text(
+                json!({
+                    "action": "result",
+                    "code": "0",
+                    "data": {
+                        "sub": "iat",
+                        "is_last": true,
+                        "text": "你好，世界"
+                    },
+                    "sid": "sid-test"
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("send final");
+        });
+
+        let mut events = Vec::new();
+        let text = run_asr_session(
+            &mut client,
+            &[7u8; 6_000],
+            &AsrOptions::default(),
+            &mut |event| events.push(event),
+        )
+        .await
+        .expect("complete ASR session");
+        server.await.expect("mock ASR server");
+
+        assert_eq!(text, "你好，世界");
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AsrEvent::Frame {
+                direction: AsrDirection::Upstream,
+                body
+            } if body.contains("\"action\":\"start\"")
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AsrEvent::Partial { text } if text == "你好"
+        )));
     }
 
     #[test]

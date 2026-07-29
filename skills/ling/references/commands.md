@@ -31,13 +31,16 @@ ling ai tts --list-vcn
 
 ling ai asr hello.pcm
 ling ai asr hello.wav --vad-eos 800
+ling ai asr hello.wav --verbose
 ling ai asr hello.pcm --json
 ```
 
 用 `ling ai tts --list-vcn` 查看支持的发音人。TTS 返回 0 字节音频时应当报错，
 不要把 URL 或空文件作为成功结果交付。
 
-ASR 音频应为 16kHz、16bit LE、单声道 PCM；WAV 会先校验格式。
+ASR 音频应为 16kHz、16bit LE、单声道 PCM；WAV 会先校验格式。识别卡住、
+超时或服务端报错时使用 `--verbose` 查看上下行控制帧和音频帧摘要；最终文本
+或 `--json` 结果仍写到标准输出。
 
 ## 应用查询
 

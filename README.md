@@ -68,6 +68,7 @@ ling ai tts --list-vcn
 
 ling ai asr hello.pcm
 ling ai asr hello.wav
+ling ai asr hello.wav --verbose
 ```
 
 TTS 支持以下发音人：
@@ -84,6 +85,8 @@ TTS 支持以下发音人：
 对应的音频 URL，也不会写入 0 字节文件。
 
 ASR 音频应为 16kHz、16bit LE、单声道 PCM；WAV 会自动校验格式。
+`--verbose` 将连接、会话、音频和结果帧摘要写到标准错误，适合排查连接或
+识别超时；最终文本或 `--json` 结果仍单独写到标准输出。
 
 ### 应用
 

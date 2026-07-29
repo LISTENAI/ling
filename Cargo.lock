@@ -756,7 +756,7 @@ name = "ling-plugin-ai"
 version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
- "base64",
+ "chrono",
  "futures-util",
  "ling-core",
  "reqwest",
