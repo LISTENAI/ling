@@ -113,12 +113,16 @@ ling app --product-id <product_id> request \
 - 只有需要逐事件排查时才使用 `--verbose`；分享输出前先脱敏。
 - `--output-tts <file.mp3>` 将首个 TTS 音频原样保存为 MP3 文件，不执行
   格式转换。
-- 默认使用 CLI 管理的 Device ID。只有用户明确指定设备身份时才传
-  `--device-id`；只有用户明确要求定向诊断某个 App ID 时才传
-  `--llm-app`。
+- 默认使用 CLI 管理、带 `ling-cli-` 前缀的随机稳定 Device ID。只有用户
+  明确指定设备身份时才传 `--device-id`，取值必须为 1 到 32 个字符；只有
+  用户明确要求定向诊断某个 App ID 时才传 `--llm-app`。
+- 本地默认 Device ID 无效时，不要编辑配置或替换请求参数；运行
+  `ling app device reset-local-id` 让 CLI 明确生成并保存新 ID。
 - 如果鉴权返回 `20105`，读取本次 Device ID，询问用户是否授权将它导入
   当前应用。取得明确授权后才能执行 `device add`；强制白名单只能在网页
   切换，不要代用户去开关。
+- `device add` 会校验每个设备的导入结果；只在全部成功时返回 0。失败时
+  根据输出的 Device ID 和原因处理，不要把“批处理已完成”当成导入成功。
 - 使用返回的 SID 执行 `ling app trace <sid>`，先查看默认时序概览。
   `trace` 按 SID 全局查询，不要给它传应用标识。
 - 默认概览包含 warn 和 error；排查自定义 Agent 自己打的 info/debug 日志
@@ -155,6 +159,7 @@ ling app deploy --version <version> --activate
 | CLI 不存在或版本过低 | 按标准工作流安装或升级官方 Release |
 | 未找到 API Key / HTTP 401 | 让用户运行 `ling login`，再用 `ling account` 验证 |
 | 未指定应用 | 使用显式标识、`listenai.toml` 或 `app list` |
+| 本地 Device ID 不符合要求 | 运行 `ling app device reset-local-id` |
 | 设备授权失败 `20105` | 询问用户是否授权导入错误中显示的 Device ID |
 | WAV 格式不符合要求 | 转为 16kHz、16bit LE、单声道 |
 | `trace` 未找到 SID | 核对 SID；日志有保留期，过期后无法回查 |

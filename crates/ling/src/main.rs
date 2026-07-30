@@ -179,6 +179,10 @@ fn page_parser() -> clap::builder::RangedI64ValueParser<u32> {
     clap::value_parser!(u32).range(1..=1000)
 }
 
+fn device_id_parser(value: &str) -> Result<String, String> {
+    config::normalize_device_id(value).map_err(|error| error.to_string())
+}
+
 fn page_size_parser() -> clap::builder::RangedI64ValueParser<u32> {
     clap::value_parser!(u32).range(1..=100)
 }
@@ -367,8 +371,8 @@ struct RequestArgs {
     /// Send an audio file (raw PCM or 16k 16bit LE mono WAV).
     #[arg(long)]
     file: Option<PathBuf>,
-    /// Override the stable per-install device id used for this request.
-    #[arg(long = "device-id")]
+    /// Override the stable per-install device id (1-32 characters).
+    #[arg(long = "device-id", value_parser = device_id_parser)]
     device_id: Option<String>,
     /// Override the app id (llm_app) for targeted debugging.
     #[arg(long = "llm-app")]
@@ -389,6 +393,12 @@ struct DeviceArgs {
 
 #[derive(Debug, Subcommand)]
 enum DeviceCommand {
+    /// Generate a new local Device ID used by `app request`.
+    ResetLocalId {
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show device quota (total / used / whitelist enforcement).
     Quota {
         /// Print the raw JSON response.
@@ -1512,6 +1522,10 @@ async fn request_command(cli: &Ctx, args: RequestArgs, selector: AppSelector) ->
     let output_tts = args.output_tts;
     let output_tts_for_download = output_tts.clone();
     let request_output = RequestTimelineOutput::new(io::stdout().is_terminal() && !verbose);
+    let device_id = match args.device_id.clone() {
+        Some(device_id) => device_id,
+        None => config::LingConfig::load_or_create_device_id()?,
+    };
     let supplied_secret = normalize_product_secret(args.product_secret)?;
     let direct_product_id = supplied_secret
         .as_ref()
@@ -1539,11 +1553,6 @@ async fn request_command(cli: &Ctx, args: RequestArgs, selector: AppSelector) ->
     } else {
         let file = args.file.expect("clap 保证 text/file 至少一个");
         RequestInput::Audio(ling_plugin_ai::load_pcm_audio(&file)?)
-    };
-    let device_id = match args.device_id {
-        Some(device_id) if !device_id.trim().is_empty() => device_id,
-        Some(_) => anyhow::bail!("--device-id 不能为空"),
-        None => config::LingConfig::load_or_create_device_id()?,
     };
     let opts = RequestOptions {
         device_id,
@@ -1835,8 +1844,19 @@ async fn trace_command(cli: &Ctx, sid: &str, verbose: bool, json: bool) -> Resul
 }
 
 async fn device_command(cli: &Ctx, args: DeviceArgs, selector: AppSelector) -> Result<()> {
+    if let DeviceCommand::ResetLocalId { json } = &args.command {
+        let device_id = config::LingConfig::reset_local_device_id()?;
+        if *json {
+            print_json(&serde_json::json!({"device_id": device_id}))?;
+        } else {
+            println!("已重新生成本地 Device ID：{device_id}");
+        }
+        return Ok(());
+    }
+
     let app = resolve_app(cli, selector).await?;
     match args.command {
+        DeviceCommand::ResetLocalId { .. } => unreachable!("handled before app resolution"),
         DeviceCommand::Quota { json } => {
             let detail = get_app_detail(cli, &app).await?;
             if json {
@@ -1927,7 +1947,13 @@ async fn device_command(cli: &Ctx, args: DeviceArgs, selector: AppSelector) -> R
                 )
                 .await?
             };
-            print_action_or_json(&output, json, "设备导入请求已提交")?;
+            if json {
+                print_json(&output)?;
+            }
+            validate_device_import_result(&output)?;
+            if !json {
+                eprintln!("设备导入成功");
+            }
         }
     }
     Ok(())
@@ -4001,6 +4027,52 @@ fn action_result_text(value: &Value, fallback: &str) -> String {
     format!("{fallback}{hint}")
 }
 
+fn validate_device_import_result(value: &Value) -> Result<()> {
+    let code = value
+        .get("code")
+        .and_then(Value::as_str)
+        .context("设备导入响应缺少 code")?;
+    if code != "SUCCESS" {
+        let message = value
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("服务端未提供错误信息");
+        anyhow::bail!("设备导入失败：{code}：{message}");
+    }
+
+    let failed = value
+        .pointer("/data/failed")
+        .and_then(Value::as_array)
+        .context("设备导入响应缺少 data.failed 数组")?;
+    if failed.is_empty() {
+        return Ok(());
+    }
+
+    let details = failed
+        .iter()
+        .map(|item| match item {
+            Value::Object(item) => {
+                let id = item
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .context("设备导入失败项缺少 id")?;
+                let error = item
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("服务端未提供失败原因");
+                Ok(format!("- {id}: {error}"))
+            }
+            Value::String(id) => Ok(format!("- {id}")),
+            _ => anyhow::bail!("设备导入响应中的 data.failed 项格式无效"),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    anyhow::bail!(
+        "设备导入未完全成功（{} 项失败）：\n{}",
+        details.len(),
+        details.join("\n")
+    )
+}
+
 fn render_ota_package(value: &Value) -> String {
     let field = |keys: &[&str]| {
         keys.iter()
@@ -4206,6 +4278,27 @@ mod tests {
         ])
         .expect_err("ids and file conflict");
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn device_reset_local_id_needs_no_app_selector() {
+        let cli = Cli::try_parse_from(["ling", "app", "device", "reset-local-id"])
+            .expect("parse local device ID reset");
+
+        match cli.command {
+            Command::App(app) => {
+                assert!(app.product_id.is_none());
+                assert!(app.project_id.is_none());
+                assert!(app.app_id.is_none());
+                assert!(matches!(
+                    app.command,
+                    AppCommand::Device(DeviceArgs {
+                        command: DeviceCommand::ResetLocalId { json: false }
+                    })
+                ));
+            }
+            other => panic!("expected app command, got {other:?}"),
+        }
     }
 
     #[test]
@@ -4882,6 +4975,54 @@ mod tests {
     }
 
     #[test]
+    fn device_import_requires_an_empty_failed_array() {
+        let success = serde_json::json!({
+            "code": "SUCCESS",
+            "data": {"failed": []},
+            "message": "导入完成"
+        });
+        validate_device_import_result(&success).expect("empty failure list should succeed");
+
+        let partial_failure = serde_json::json!({
+            "code": "SUCCESS",
+            "data": {
+                "failed": [{
+                    "id": "device-1",
+                    "error": "deviceId已存在"
+                }]
+            },
+            "message": "导入完成"
+        });
+        let error = validate_device_import_result(&partial_failure)
+            .expect_err("item-level failures must fail the command");
+        let message = error.to_string();
+        assert!(message.contains("1 项失败"));
+        assert!(message.contains("device-1: deviceId已存在"));
+    }
+
+    #[test]
+    fn device_import_rejects_unsuccessful_or_malformed_responses() {
+        let unsuccessful = serde_json::json!({
+            "code": "IMPORT_FAILED",
+            "message": "产品服务不可用",
+            "data": {"failed": []}
+        });
+        assert!(validate_device_import_result(&unsuccessful)
+            .expect_err("business error must fail")
+            .to_string()
+            .contains("IMPORT_FAILED：产品服务不可用"));
+
+        let malformed = serde_json::json!({
+            "code": "SUCCESS",
+            "data": {}
+        });
+        assert!(validate_device_import_result(&malformed)
+            .expect_err("missing failed list must fail")
+            .to_string()
+            .contains("data.failed"));
+    }
+
+    #[test]
     fn role_detail_uses_project_default_state() {
         let detail = serde_json::json!({
             "data": {"id": "role-1", "name": "小聆老师", "is_default": false}
@@ -5342,6 +5483,23 @@ mod tests {
             },
             other => panic!("expected app command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn app_request_rejects_oversized_device_id_override() {
+        let oversized = "x".repeat(config::MAX_DEVICE_ID_CHARS + 1);
+        let error = Cli::try_parse_from([
+            "ling",
+            "app",
+            "request",
+            "--text",
+            "你好",
+            "--device-id",
+            &oversized,
+        ])
+        .expect_err("Device IDs must fit the downstream model schema");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        assert!(error.to_string().contains("最多 32 个字符"));
     }
 
     #[test]

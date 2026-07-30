@@ -71,10 +71,17 @@
 - Upload text through the same binary data path as the device client. Send
   16 kHz, 16-bit little-endian mono PCM at real-time playback speed.
 - Reuse a random, per-install CLI Device ID unless the user supplies a
-  one-request override.
+  one-request override. Generated IDs must keep a recognizable `ling-cli-`
+  prefix, and all generated and user-supplied Device IDs must remain within
+  1-32 characters. Reject invalid persisted CLI IDs before platform access;
+  never migrate or silently rewrite them. Recovery must be an explicit local
+  reset command.
 - Redact credentials from default human-readable interaction output. Keep
   protocol frames intact only in explicitly requested verbose diagnostics.
 - Treat device tool names, descriptions, and input schemas as compatibility
   contracts. Do not change them without an authoritative device definition.
   Respond to `initialize`, `tools/list`, and `tools/call`, and ignore lifecycle
   notifications such as `tools/start` and `tools/complete`.
+- A successful device-import response envelope does not imply every item was
+  imported. Require an empty `data.failed` array; report each failed Device ID
+  and reason, and return a non-zero exit status when any item failed.
