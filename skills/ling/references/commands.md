@@ -213,6 +213,10 @@ ling kb delete <index_id>
 ling kb doc <index_id> delete <doc_id>...
 ```
 
+应用删除、设备列表、强制白名单和 OTA 发布/撤销位于应用列表的应用侧栏；
+CLI 会提示目标 Product ID 和对应标签。角色、MCP 与专业词汇删除位于独立的
+应用配置页。知识库相关命令会进入知识库列表或指定知识库详情。
+
 切换设备强制白名单没有对应的 CLI 命令，只能在网页操作；`ling app device
 enforce` 会连同当前状态一起给出入口。
 

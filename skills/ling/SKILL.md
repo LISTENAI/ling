@@ -70,10 +70,11 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 
 | 操作 | 网页 |
 | --- | --- |
-| 删除应用、角色、MCP 或专业词汇 | `https://platform.listenai.com/appConfig?id=<project_id>` |
+| 删除应用 | `https://platform.listenai.com/application`，选择应用后进入“设置” |
+| 删除角色、MCP 或专业词汇 | `https://platform.listenai.com/appConfig?id=<project_id>` |
 | 查看设备列表 | `https://platform.listenai.com/application` |
 | 切换设备强制白名单（`device enforce` 只读） | `https://platform.listenai.com/application` |
-| OTA 正式发布或撤销 | `https://platform.listenai.com/appConfig?id=<project_id>` |
+| OTA 正式发布或撤销 | `https://platform.listenai.com/application`，选择应用后进入“固件升级” |
 | 删除账号级知识库 | `https://platform.listenai.com/datasets` |
 | 删除知识库文档 | `https://platform.listenai.com/datasets/detail?id=<index_id>` |
 

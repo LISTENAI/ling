@@ -21,6 +21,7 @@ use std::time::Instant;
 const DOCS_BASE_URL: &str = "https://docs2.listenai.com";
 const PLATFORM_APP_CONFIG_URL: &str = "https://platform.listenai.com/appConfig";
 const PLATFORM_APPLICATION_URL: &str = "https://platform.listenai.com/application";
+const PLATFORM_CUSTOM_FIRMWARE_URL: &str = "https://platform.listenai.com/customFirmware";
 const PLATFORM_KB_URL: &str = "https://platform.listenai.com/datasets";
 const MAX_HOTWORD_CHARS: usize = 24;
 const MAX_HOTWORDS_TOTAL_CHARS: usize = 1024;
@@ -1206,7 +1207,10 @@ async fn ai_command(cli: &Ctx, args: AiArgs) -> Result<ExitCode> {
         AiCommand::Tts(args) => tts_command(cli, args).await?,
         AiCommand::Asr(args) => asr_command(&cli.api_base_url, args).await?,
         AiCommand::Wakeword(_) => {
-            return Err(platform_write_unavailable("唤醒词资源生成"));
+            return Err(platform_write_unavailable(
+                "唤醒词资源生成",
+                PLATFORM_CUSTOM_FIRMWARE_URL,
+            ));
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -1414,7 +1418,11 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
         }
         AppCommand::Delete => {
             let app = resolve_app(cli, selector).await?;
-            return Err(app_config_only_operation("删除应用", &app.project_id));
+            return Err(application_only_operation(
+                "删除应用",
+                &app.product_id,
+                "设置",
+            ));
         }
         AppCommand::Request(args) => request_command(cli, args, selector).await?,
         AppCommand::Trace { sid, verbose, json } => {
@@ -2475,13 +2483,15 @@ async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<
             .await?;
             print_action_or_json(&output, json, "OTA 包更新成功")
         }
-        OtaCommand::Publish { package_id } => Err(app_config_only_operation(
+        OtaCommand::Publish { package_id } => Err(application_only_operation(
             &format!("正式发布 OTA 包 {package_id}"),
-            &app.project_id,
+            &app.product_id,
+            "固件升级",
         )),
-        OtaCommand::Revoke { package_id } => Err(app_config_only_operation(
+        OtaCommand::Revoke { package_id } => Err(application_only_operation(
             &format!("撤销 OTA 包 {package_id}"),
-            &app.project_id,
+            &app.product_id,
+            "固件升级",
         )),
         OtaCommand::Delete {
             package_id,
@@ -3937,9 +3947,10 @@ fn direct_request_product_id(selector: &AppSelector) -> Option<String> {
     })
 }
 
-fn platform_write_unavailable(feature: &str) -> anyhow::Error {
+fn platform_write_unavailable(feature: &str, url: &str) -> anyhow::Error {
     anyhow!(
-        "「{feature}」的平台开放 API 尚未上线，请暂时在平台网页端操作：https://platform.listenai.com\n平台打通 API Key 授权链路后，ling 将在后续版本启用此命令。"
+        "「{feature}」的平台开放 API 尚未上线，请暂时在平台网页端操作：{url}\n\
+         平台打通 API Key 授权链路后，ling 将在后续版本启用此命令。"
     )
 }
 
@@ -3955,6 +3966,13 @@ fn app_config_url(project_id: &str) -> String {
 
 fn app_config_only_operation(feature: &str, project_id: &str) -> anyhow::Error {
     web_only_operation(feature, &app_config_url(project_id))
+}
+
+fn application_only_operation(feature: &str, product_id: &str, section: &str) -> anyhow::Error {
+    anyhow!(
+        "CLI 不执行「{feature}」；请打开应用列表，选择 Product ID 为 {product_id} 的应用，\
+         进入「{section}」确认影响范围并操作：\n{PLATFORM_APPLICATION_URL}"
+    )
 }
 
 fn device_list_guidance() -> String {
@@ -4317,6 +4335,23 @@ mod tests {
         let message = app_config_only_operation("删除角色 role-1", "project-123").to_string();
         assert!(message.contains("CLI 不执行「删除角色 role-1」"));
         assert!(message.contains("https://platform.listenai.com/appConfig?id=project-123"));
+    }
+
+    #[test]
+    fn application_web_only_operations_link_to_the_correct_drawer_section() {
+        let delete = application_only_operation("删除应用", "product-123", "设置").to_string();
+        assert!(delete.contains("CLI 不执行「删除应用」"));
+        assert!(delete.contains("Product ID 为 product-123"));
+        assert!(delete.contains("进入「设置」"));
+        assert!(delete.contains(PLATFORM_APPLICATION_URL));
+        assert!(!delete.contains("appConfig"));
+
+        let ota =
+            application_only_operation("正式发布 OTA 包 package-123", "product-123", "固件升级")
+                .to_string();
+        assert!(ota.contains("进入「固件升级」"));
+        assert!(ota.contains(PLATFORM_APPLICATION_URL));
+        assert!(!ota.contains("appConfig"));
     }
 
     #[test]
@@ -6009,6 +6044,11 @@ mod tests {
         let ai = command.find_subcommand_mut("ai").expect("ai command");
         let help = ai.render_long_help().to_string();
         assert!(!help.contains("wakeword"));
+
+        let message =
+            platform_write_unavailable("唤醒词资源生成", PLATFORM_CUSTOM_FIRMWARE_URL).to_string();
+        assert!(message.contains(PLATFORM_CUSTOM_FIRMWARE_URL));
+        assert!(!message.contains("https://platform.listenai.com\n"));
     }
 
     #[test]
