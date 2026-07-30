@@ -755,18 +755,53 @@ pub fn render_management_ota_list(value: &Value) -> Result<String> {
 }
 
 pub fn render_management_ota_whitelist(value: &Value) -> Result<String> {
-    render_resource_list(
+    let items = response_items(value)?;
+    if items.is_empty() {
+        return Ok("暂无白名单设备。".to_owned());
+    }
+
+    let has_metadata = items.iter().any(|item| {
+        item.get("status").is_some()
+            || item.get("created_at").is_some()
+            || item.get("createdAt").is_some()
+    });
+    let (headers, rows) = if has_metadata {
+        (
+            vec!["设备 ID", "状态", "创建时间"],
+            items
+                .iter()
+                .map(|item| {
+                    vec![
+                        item.as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| first_field(item, &["device_id", "id", "sn"])),
+                        field(item, "status"),
+                        first_field(item, &["created_at", "createdAt"]),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        (
+            vec!["设备 ID"],
+            items
+                .iter()
+                .map(|item| {
+                    vec![item
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| first_field(item, &["device_id", "id", "sn"]))]
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    Ok(with_page_summary(
+        render_table(&headers, &rows),
         value,
-        &["设备 ID", "状态", "创建时间"],
         "白名单设备",
-        |item| {
-            vec![
-                first_field(item, &["device_id", "id", "sn"]),
-                field(item, "status"),
-                first_field(item, &["created_at", "createdAt"]),
-            ]
-        },
-    )
+        rows.len(),
+    ))
 }
 
 pub fn render_management_app_kbs(value: &Value) -> Result<String> {
@@ -1364,6 +1399,25 @@ mod tests {
         assert!(output.contains("OTA 包 ID"));
         assert!(output.contains("33348d36417b86caf8f174db332ae644"));
         assert!(!output.contains("1979"));
+    }
+
+    #[test]
+    fn renders_ota_whitelist_string_items_as_device_ids() {
+        let value = json!({
+            "code": "SUCCESS",
+            "data": ["ling_132456"],
+            "message": "查询成功",
+            "page": 1,
+            "pageSize": 20,
+            "total": 1
+        });
+
+        let output = render_management_ota_whitelist(&value).unwrap();
+
+        assert!(output.contains("设备 ID"));
+        assert!(output.contains("ling_132456"));
+        assert!(output.contains("共 1 个白名单设备"));
+        assert!(!output.contains("│ - "));
     }
 
     #[test]
