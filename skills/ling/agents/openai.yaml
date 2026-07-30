@@ -1,6 +1,6 @@
 interface:
   display_name: "ListenAI ling"
   short_description: "安全使用 ListenAI CLI 管理 AI、应用、知识库和端云调试"
-  default_prompt: "使用 $ling 安全地完成一个 ListenAI CLI 操作。"
+  default_prompt: "使用 $ling 以最小必要路径完成并验证 ListenAI 任务；自定义 Agent 接入在授权范围内完成测试链路部署与激活。"
 policy:
   allow_implicit_invocation: true

@@ -31,7 +31,9 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 - 应用资料、角色、唤醒词与应答语、知识库、专业词汇、提示语文案、MCP、
   设备、OTA 或模型接入配置：使用对应的 `ling app` 子命令。
 - 模拟端云请求或回查 SID：使用 `request` 和 `trace`。
-- 只有明确涉及自定义 Agent 源码时，才进入 `init/build/deploy` 流程。
+- 只有明确涉及自定义 Agent 源码时，才进入 `init/build/deploy` 流程。开发
+  或修改自定义 Agent 时默认按完整开发流程执行；用户明确限定为只改代码、
+  本地构建、预览或上传时，才在对应阶段停止。
 - 单纯切换真实设备 PID/SID 或应用绑定时，不要拉取、构建任何代码仓库。
 - 涉及固件源码、SDK、开发板、编译或烧录时，发现并转交给匹配的端侧开发
   Skill。找不到专用 Skill 时停止，不要自行猜测仓库、工具链或烧录命令。
@@ -132,11 +134,16 @@ ling app --product-id <product_id> request \
 
 ## 自定义 Agent
 
-在用户确认进入自定义 Agent 开发流程后：
+开始前说明目标应用、版本安排、测试链路变化和验收方式，并取得一次确认。
+这次确认覆盖已确认目标上的初始化、修改、构建、上传、测试链路激活和
+`request/trace` 验证；测试链路激活不影响生产环境。只有目标或范围变化，
+或者预览暴露异常时，才再次确认。
 
 ```bash
 ling app --product-id <product_id> init <agent_name>
 cd <agent_name>
+ling app chain show
+ling app chain versions
 ling app build
 ling app deploy --version <version> --dry-run
 ling app deploy --version <version> --activate
@@ -144,13 +151,22 @@ ling app deploy --version <version> --activate
 
 - `init` 将本地项目与目标应用关联。
 - `--dry-run` 检查目标应用和构建产物，不上传版本。
+- 执行 `chain show` 和 `chain versions` 检查当前链路与已有版本，再选择
+  未使用且递增的版本。预览符合预期时直接继续，不要仅因将要上传或激活而
+  重复等待用户确认。
 - `--activate` 上传版本并将其用于应用测试链路。只有激活后，才能通过普通
   `request` 验证这个自定义版本。
-- 使用 `ling app chain show` 确认测试链路模式和版本。
-- 使用 `ling app chain versions` 查询已上传版本。
 - 版本必须为 `X.Y.Z` 或 `vX.Y.Z`，同一 App 下不能重复且必须递增。
-- 切换已有版本使用 `chain set custom`；恢复官方托管链路使用
+- 版本已经上传但未激活，或上传成功后激活失败时，使用
+  `chain set custom <version>` 补做激活；恢复官方托管链路使用
   `chain set managed`。
+- 自定义 Agent 开发任务不要在代码完成、本地构建、dry-run 或仅上传版本后
+  宣告完成。完成条件是：
+  1. `chain show` 显示自定义链路及目标版本；
+  2. `request` 命中本次实现并返回预期行为；
+  3. 必要时用 `trace` 确认没有阻断错误。
+- 验证失败时继续排查，不要把“部署成功”当成“接入完成”。最终报告目标
+  应用、部署版本、当前链路和实际验证结果；有 SID 时一并报告。
 
 ## 常见错误
 
