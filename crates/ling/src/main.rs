@@ -20,6 +20,7 @@ use std::time::Instant;
 
 const DOCS_BASE_URL: &str = "https://docs2.listenai.com";
 const PLATFORM_APP_CONFIG_URL: &str = "https://platform.listenai.com/appConfig";
+const PLATFORM_APPLICATION_URL: &str = "https://platform.listenai.com/application";
 const PLATFORM_KB_URL: &str = "https://platform.listenai.com/datasets";
 const MAX_HOTWORD_CHARS: usize = 24;
 const MAX_HOTWORDS_TOTAL_CHARS: usize = 1024;
@@ -405,7 +406,7 @@ enum DeviceCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Open the web workflow for viewing imported device ids.
+    /// Show where to view imported device ids.
     List,
     /// Import one or more device ids, or upload a text file.
     Add {
@@ -425,7 +426,7 @@ enum DeviceCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Show whitelist enforcement. Toggling it is a web-only operation.
+    /// Show which devices are allowed to connect. Changes are web-only.
     Enforce {
         /// Print the raw JSON response.
         #[arg(long)]
@@ -1853,6 +1854,10 @@ async fn device_command(cli: &Ctx, args: DeviceArgs, selector: AppSelector) -> R
         }
         return Ok(());
     }
+    if matches!(&args.command, DeviceCommand::List) {
+        println!("{}", device_list_guidance());
+        return Ok(());
+    }
 
     let app = resolve_app(cli, selector).await?;
     match args.command {
@@ -1914,16 +1919,10 @@ async fn device_command(cli: &Ctx, args: DeviceArgs, selector: AppSelector) -> R
                     .pointer("/data/enabled")
                     .and_then(Value::as_bool)
                     .context("设备白名单响应缺少 data.enabled")?;
-                println!("{}", if enabled { "on" } else { "off" });
-                println!(
-                    "切换强制白名单会立刻影响线上设备接入，CLI 不执行；请前往网页操作：{}",
-                    app_config_url(&app.project_id)
-                );
+                println!("{}", device_enforcement_summary(enabled));
             }
         }
-        DeviceCommand::List => {
-            return Err(app_config_only_operation("查看设备列表", &app.project_id));
-        }
+        DeviceCommand::List => unreachable!("handled before app resolution"),
         DeviceCommand::Add {
             device_ids,
             file,
@@ -3977,6 +3976,28 @@ fn app_config_only_operation(feature: &str, project_id: &str) -> anyhow::Error {
     web_only_operation(feature, &app_config_url(project_id))
 }
 
+fn device_list_guidance() -> String {
+    format!(
+        "CLI 暂不展示已导入设备列表。\n\
+         请打开小聆平台的应用列表，选择目标应用后进入「设备管理」查看：\n\
+         {PLATFORM_APPLICATION_URL}"
+    )
+}
+
+fn device_enforcement_summary(enabled: bool) -> String {
+    let (state, rule) = if enabled {
+        ("已开启", "仅已导入的设备可以接入此应用。")
+    } else {
+        ("未开启", "设备无需预先导入即可接入此应用。")
+    };
+    format!(
+        "强制白名单：{state}\n\
+         接入规则：{rule}\n\n\
+         如需修改，请打开小聆平台的应用列表，选择目标应用后进入「设备管理」：\n\
+         {PLATFORM_APPLICATION_URL}"
+    )
+}
+
 fn kb_detail_url(index_id: &str) -> String {
     let mut url = reqwest::Url::parse(&format!("{PLATFORM_KB_URL}/detail"))
         .expect("平台知识库详情 URL 必须合法");
@@ -5895,6 +5916,26 @@ mod tests {
         assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
         Cli::try_parse_from(["ling", "app", "device", "enforce"])
             .expect("showing state is allowed");
+    }
+
+    #[test]
+    fn device_management_guidance_explains_impact_and_uses_application_page() {
+        let enabled = device_enforcement_summary(true);
+        assert!(enabled.contains("强制白名单：已开启"));
+        assert!(enabled.contains("仅已导入的设备可以接入此应用"));
+        assert!(enabled.contains(PLATFORM_APPLICATION_URL));
+        assert!(!enabled.contains("appConfig"));
+
+        let disabled = device_enforcement_summary(false);
+        assert!(disabled.contains("强制白名单：未开启"));
+        assert!(disabled.contains("设备无需预先导入即可接入此应用"));
+        assert!(disabled.contains(PLATFORM_APPLICATION_URL));
+
+        let list = device_list_guidance();
+        assert!(list.contains("暂不展示已导入设备列表"));
+        assert!(list.contains("选择目标应用"));
+        assert!(list.contains(PLATFORM_APPLICATION_URL));
+        assert!(!list.contains("appConfig"));
     }
 
     #[test]

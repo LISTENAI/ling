@@ -164,7 +164,10 @@ ling app ota whitelist delete <device_id>
 - `config show` 默认以表格列出可编辑 Key、枚举值和格式约束；
   `--json` 输出结构化 `editable_fields`。Key 以 `config show` 的写法为准。
 - `config edit` 成功后回显本次实际改动的字段名。
-- `device enforce` 只读，显示当前强制白名单状态和网页入口。
+- `device enforce` 只读，说明当前接入规则，并引导用户从
+  `https://platform.listenai.com/application` 选择目标应用后修改。
+- `device list` 不查询设备数据，直接引导用户从同一应用列表进入设备管理
+  查看。
 - `device add` 是同步导入。只要有一个 Device ID 导入失败，就会列出其 ID
   和原因并返回非零状态；`--json` 仍输出完整响应，但退出状态保持失败。
 - `tone` 中的值是合成设备提示音的文案，不是音频文件。

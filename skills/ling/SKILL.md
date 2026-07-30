@@ -64,13 +64,13 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 
 ## 网页操作边界
 
-以下命令入口只提供网页指引，不调用对应的高风险接口：
+以下操作需通过网页完成；对应 CLI 入口只提供状态或网页指引：
 
 | 操作 | 网页 |
 | --- | --- |
 | 删除应用、角色、MCP 或专业词汇 | `https://platform.listenai.com/appConfig?id=<project_id>` |
-| 查看设备列表 | `https://platform.listenai.com/appConfig?id=<project_id>` |
-| 切换设备强制白名单（`device enforce` 只读） | `https://platform.listenai.com/appConfig?id=<project_id>` |
+| 查看设备列表 | `https://platform.listenai.com/application` |
+| 切换设备强制白名单（`device enforce` 只读） | `https://platform.listenai.com/application` |
 | OTA 正式发布或撤销 | `https://platform.listenai.com/appConfig?id=<project_id>` |
 | 删除账号级知识库 | `https://platform.listenai.com/datasets` |
 | 删除知识库文档 | `https://platform.listenai.com/datasets/detail?id=<index_id>` |
