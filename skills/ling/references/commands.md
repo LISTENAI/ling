@@ -125,8 +125,11 @@ ling app config edit --set system_prompt='"..."'
 ling app config reset-model
 ling app config test-model --endpoint <url> --model <model>
 
-ling app device reset-local-id
+ling config device-id show
+ling config device-id reset
+
 ling app device quota
+ling app device add --self
 ling app device add <device_id>...
 ling app device add --file devices.txt
 ling app device query <device_id>
@@ -140,6 +143,7 @@ ling app ota edit <package_id> --description "修订说明"
 ling app ota delete <package_id> --yes
 ling app ota whitelist list
 ling app ota whitelist add <device_id>
+ling app ota whitelist add --self
 ling app ota whitelist delete <device_id>
 ```
 
@@ -243,11 +247,13 @@ ling app trace <sid> --json
 绕过应用管理查询直接模拟设备请求。它不提供 `--json`：默认输出人类可读
 时间线，`--verbose` 逐行输出带方向的原始诊断事件。请求汇总和鉴权错误会
 显示实际 Device ID；`--device-id` 只覆盖本次请求。
-显式 Device ID 必须为 1 到 32 个字符；默认值带 `ling-cli-` 前缀，由 CLI
-随机生成并持久保存。
-如果持久化的默认 ID 不符合格式，`request` 会在访问平台前报错且不会自动
-迁移。运行 `ling app device reset-local-id` 可重新生成；该命令是纯本地
-操作，不需要应用标识，也不访问平台。
+默认值由 CLI 随机生成并持久保存。CLI 不推断 Device ID 的合法性，显式值
+和持久化值都会原样交给服务端，并展示服务端返回的错误。运行
+`ling config device-id show` 可查看本地 ID，运行
+`ling config device-id reset` 可重新生成；这两个命令是纯本地操作，不
+需要应用标识，也不访问平台。应用启用设备白名单时，取得用户明确授权后可
+运行 `ling app device add --self` 导入当前 CLI 的 ID；OTA 测试白名单使用
+`ling app ota whitelist add --self`。
 `--llm-app` 只用于用户明确要求的定向诊断。
 `--output-tts <file.mp3>` 将首个 TTS 音频原样保存为 MP3 文件，不执行格式
 转换。

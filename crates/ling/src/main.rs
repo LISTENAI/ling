@@ -60,6 +60,8 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Manage local CLI configuration.
+    Config(LocalConfigArgs),
     /// Basic AI abilities: models, chat, TTS, and ASR.
     Ai(AiArgs),
     /// Platform app management and local agent project workflow.
@@ -78,6 +80,44 @@ struct LoginArgs {
     /// Print the raw JSON response.
     #[arg(long)]
     json: bool,
+}
+
+// ---------------------------------------------------------------------------
+// ling config
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Args)]
+struct LocalConfigArgs {
+    #[command(subcommand)]
+    command: LocalConfigCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum LocalConfigCommand {
+    /// Manage the local Device ID used by app requests.
+    DeviceId(LocalDeviceIdArgs),
+}
+
+#[derive(Debug, Args)]
+struct LocalDeviceIdArgs {
+    #[command(subcommand)]
+    command: LocalDeviceIdCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum LocalDeviceIdCommand {
+    /// Show the current local Device ID.
+    Show {
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Generate and save a new local Device ID.
+    Reset {
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -179,10 +219,6 @@ struct TtsArgs {
 
 fn page_parser() -> clap::builder::RangedI64ValueParser<u32> {
     clap::value_parser!(u32).range(1..=1000)
-}
-
-fn device_id_parser(value: &str) -> Result<String, String> {
-    config::normalize_device_id(value).map_err(|error| error.to_string())
 }
 
 fn page_size_parser() -> clap::builder::RangedI64ValueParser<u32> {
@@ -373,8 +409,8 @@ struct RequestArgs {
     /// Send an audio file (raw PCM or 16k 16bit LE mono WAV).
     #[arg(long)]
     file: Option<PathBuf>,
-    /// Override the stable per-install device id (1-32 characters).
-    #[arg(long = "device-id", value_parser = device_id_parser)]
+    /// Override the stable per-install device id.
+    #[arg(long = "device-id")]
     device_id: Option<String>,
     /// Override the app id (llm_app) for targeted debugging.
     #[arg(long = "llm-app")]
@@ -395,12 +431,6 @@ struct DeviceArgs {
 
 #[derive(Debug, Subcommand)]
 enum DeviceCommand {
-    /// Generate a new local Device ID used by `app request`.
-    ResetLocalId {
-        /// Print the result as JSON.
-        #[arg(long)]
-        json: bool,
-    },
     /// Show device quota (total / used / whitelist enforcement).
     Quota {
         /// Print the raw JSON response.
@@ -411,11 +441,17 @@ enum DeviceCommand {
     List,
     /// Import one or more device ids, or upload a text file.
     Add {
-        #[arg(required_unless_present = "file")]
+        #[arg(required_unless_present_any = ["file", "self_device"])]
         device_ids: Vec<String>,
         /// UTF-8 text file with one device id per line.
-        #[arg(long, conflicts_with = "device_ids")]
+        #[arg(long, conflicts_with_all = ["device_ids", "self_device"])]
         file: Option<PathBuf>,
+        /// Import this CLI installation's local Device ID.
+        #[arg(
+            long = "self",
+            conflicts_with_all = ["device_ids", "file"]
+        )]
+        self_device: bool,
         /// Print the raw JSON response.
         #[arg(long)]
         json: bool,
@@ -522,7 +558,11 @@ enum OtaWhitelistCommand {
         json: bool,
     },
     Add {
-        device_id: String,
+        #[arg(required_unless_present = "self_device")]
+        device_id: Option<String>,
+        /// Add this CLI installation's local Device ID.
+        #[arg(long = "self", conflicts_with = "device_id")]
+        self_device: bool,
         #[arg(long)]
         json: bool,
     },
@@ -1136,6 +1176,10 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             account_command(ctx.api_base_url, json).await?;
             Ok(ExitCode::SUCCESS)
         }
+        Command::Config(args) => {
+            local_config_command(args)?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Ai(args) => ai_command(&ctx, args).await,
         Command::App(args) => app_command(&ctx, args).await,
         Command::Kb(args) => {
@@ -1185,6 +1229,31 @@ async fn account_command(api_base_url: String, json: bool) -> Result<()> {
     } else {
         println!("{}", v1_api::render_account(&output)?);
         Ok(())
+    }
+}
+
+fn local_config_command(args: LocalConfigArgs) -> Result<()> {
+    match args.command {
+        LocalConfigCommand::DeviceId(args) => match args.command {
+            LocalDeviceIdCommand::Show { json } => {
+                let device_id = config::LingConfig::show_device_id()?;
+                if json {
+                    print_json(&serde_json::json!({"device_id": device_id}))
+                } else {
+                    println!("本地 Device ID：{device_id}");
+                    Ok(())
+                }
+            }
+            LocalDeviceIdCommand::Reset { json } => {
+                let device_id = config::LingConfig::reset_local_device_id()?;
+                if json {
+                    print_json(&serde_json::json!({"device_id": device_id}))
+                } else {
+                    println!("已重新生成本地 Device ID：{device_id}");
+                    Ok(())
+                }
+            }
+        },
     }
 }
 
@@ -1848,23 +1917,19 @@ async fn trace_command(cli: &Ctx, sid: &str, verbose: bool, json: bool) -> Resul
 }
 
 async fn device_command(cli: &Ctx, args: DeviceArgs, selector: AppSelector) -> Result<()> {
-    if let DeviceCommand::ResetLocalId { json } = &args.command {
-        let device_id = config::LingConfig::reset_local_device_id()?;
-        if *json {
-            print_json(&serde_json::json!({"device_id": device_id}))?;
-        } else {
-            println!("已重新生成本地 Device ID：{device_id}");
-        }
-        return Ok(());
-    }
     if matches!(&args.command, DeviceCommand::List) {
         println!("{}", device_list_guidance());
         return Ok(());
     }
 
+    let local_device_id = match &args.command {
+        DeviceCommand::Add {
+            self_device: true, ..
+        } => Some(config::LingConfig::load_or_create_device_id()?),
+        _ => None,
+    };
     let app = resolve_app(cli, selector).await?;
     match args.command {
-        DeviceCommand::ResetLocalId { .. } => unreachable!("handled before app resolution"),
         DeviceCommand::Quota { json } => {
             let detail = get_app_detail(cli, &app).await?;
             if json {
@@ -1929,8 +1994,10 @@ async fn device_command(cli: &Ctx, args: DeviceArgs, selector: AppSelector) -> R
         DeviceCommand::Add {
             device_ids,
             file,
+            self_device,
             json,
         } => {
+            debug_assert_eq!(self_device, local_device_id.is_some());
             let output = if let Some(file) = file {
                 management::upload_device_file(
                     &cli.api_base_url,
@@ -1945,7 +2012,12 @@ async fn device_command(cli: &Ctx, args: DeviceArgs, selector: AppSelector) -> R
                     &app.api_key,
                     &app.project_id,
                     &["devices", "import-by-ids"],
-                    serde_json::json!({"device_ids": device_ids}),
+                    serde_json::json!({
+                        "device_ids": local_device_id
+                            .clone()
+                            .map(|device_id| vec![device_id])
+                            .unwrap_or(device_ids)
+                    }),
                 )
                 .await?
             };
@@ -1954,7 +2026,11 @@ async fn device_command(cli: &Ctx, args: DeviceArgs, selector: AppSelector) -> R
             }
             validate_device_import_result(&output)?;
             if !json {
-                eprintln!("设备导入成功");
+                if let Some(device_id) = local_device_id {
+                    eprintln!("已导入当前 CLI Device ID：{device_id}");
+                } else {
+                    eprintln!("设备导入成功");
+                }
             }
         }
     }
@@ -2537,7 +2613,16 @@ async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<
                     Ok(())
                 }
             }
-            OtaWhitelistCommand::Add { device_id, json } => {
+            OtaWhitelistCommand::Add {
+                device_id,
+                self_device,
+                json,
+            } => {
+                let device_id = if self_device {
+                    config::LingConfig::show_device_id()?
+                } else {
+                    device_id.expect("clap requires a Device ID or --self")
+                };
                 let output = management::action_resource(
                     &cli.api_base_url,
                     &app.api_key,
@@ -4287,6 +4372,8 @@ mod tests {
             .expect("parse device ids");
         Cli::try_parse_from(["ling", "app", "device", "add", "--file", "devices.txt"])
             .expect("parse device file");
+        Cli::try_parse_from(["ling", "app", "device", "add", "--self"])
+            .expect("parse local device ID");
         let err = Cli::try_parse_from([
             "ling",
             "app",
@@ -4298,27 +4385,69 @@ mod tests {
         ])
         .expect_err("ids and file conflict");
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let err = Cli::try_parse_from(["ling", "app", "device", "add", "--self", "dev-1"])
+            .expect_err("local and explicit device IDs conflict");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let err = Cli::try_parse_from([
+            "ling",
+            "app",
+            "device",
+            "add",
+            "--self",
+            "--file",
+            "devices.txt",
+        ])
+        .expect_err("local device ID and file conflict");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        Cli::try_parse_from(["ling", "app", "device", "add"])
+            .expect_err("device source is required");
     }
 
     #[test]
-    fn device_reset_local_id_needs_no_app_selector() {
-        let cli = Cli::try_parse_from(["ling", "app", "device", "reset-local-id"])
-            .expect("parse local device ID reset");
+    fn local_device_id_commands_parse_without_app_context() {
+        let show = Cli::try_parse_from(["ling", "config", "device-id", "show"])
+            .expect("parse local device ID show");
+        assert!(matches!(
+            show.command,
+            Command::Config(LocalConfigArgs {
+                command: LocalConfigCommand::DeviceId(LocalDeviceIdArgs {
+                    command: LocalDeviceIdCommand::Show { json: false }
+                })
+            })
+        ));
 
-        match cli.command {
-            Command::App(app) => {
-                assert!(app.product_id.is_none());
-                assert!(app.project_id.is_none());
-                assert!(app.app_id.is_none());
-                assert!(matches!(
-                    app.command,
-                    AppCommand::Device(DeviceArgs {
-                        command: DeviceCommand::ResetLocalId { json: false }
-                    })
-                ));
-            }
-            other => panic!("expected app command, got {other:?}"),
-        }
+        let reset = Cli::try_parse_from(["ling", "config", "device-id", "reset", "--json"])
+            .expect("parse local device ID reset");
+        assert!(matches!(
+            reset.command,
+            Command::Config(LocalConfigArgs {
+                command: LocalConfigCommand::DeviceId(LocalDeviceIdArgs {
+                    command: LocalDeviceIdCommand::Reset { json: true }
+                })
+            })
+        ));
+    }
+
+    #[test]
+    fn ota_whitelist_add_accepts_a_device_id_or_self() {
+        Cli::try_parse_from(["ling", "app", "ota", "whitelist", "add", "device-1"])
+            .expect("parse explicit OTA whitelist Device ID");
+        Cli::try_parse_from(["ling", "app", "ota", "whitelist", "add", "--self"])
+            .expect("parse local OTA whitelist Device ID");
+
+        let error = Cli::try_parse_from([
+            "ling",
+            "app",
+            "ota",
+            "whitelist",
+            "add",
+            "device-1",
+            "--self",
+        ])
+        .expect_err("explicit Device ID and --self conflict");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        Cli::try_parse_from(["ling", "app", "ota", "whitelist", "add"])
+            .expect_err("OTA whitelist Device ID source is required");
     }
 
     #[test]
@@ -5607,20 +5736,28 @@ mod tests {
     }
 
     #[test]
-    fn app_request_rejects_oversized_device_id_override() {
-        let oversized = "x".repeat(config::MAX_DEVICE_ID_CHARS + 1);
-        let error = Cli::try_parse_from([
+    fn app_request_passes_device_id_overrides_through_without_validation() {
+        let device_id = format!("自定义 device id {}", "x".repeat(64));
+        let cli = Cli::try_parse_from([
             "ling",
             "app",
             "request",
             "--text",
             "你好",
             "--device-id",
-            &oversized,
+            &device_id,
         ])
-        .expect_err("Device IDs must fit the downstream model schema");
-        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
-        assert!(error.to_string().contains("最多 32 个字符"));
+        .expect("Device ID validation belongs to the service");
+
+        match cli.command {
+            Command::App(app) => match app.command {
+                AppCommand::Request(request) => {
+                    assert_eq!(request.device_id.as_deref(), Some(device_id.as_str()));
+                }
+                other => panic!("expected app request command, got {other:?}"),
+            },
+            other => panic!("expected app command, got {other:?}"),
+        }
     }
 
     #[test]

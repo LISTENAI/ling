@@ -159,10 +159,11 @@ ling app --product-id <product_id> request \
 同时提供 Product ID 和 Product Secret 时，可直接模拟不属于当前登录账号的
 应用，不会先调用应用管理接口。
 
-CLI 默认使用每次安装随机生成并持久保存、带 `ling-cli-` 前缀的 Device ID。
-显式传入 `--device-id` 时，长度必须为 1 到 32 个字符。
-如果本地 ID 无效，CLI 会在发起请求前报错；运行
-`ling app device reset-local-id` 可主动重新生成。
+CLI 默认使用每次安装随机生成并持久保存的 Device ID。
+使用 `ling config device-id show` 查看本地 ID，使用
+`ling config device-id reset` 主动重新生成。如果应用启用了设备白名单，
+可用 `ling app device add --self` 导入当前 CLI 的 ID；OTA 测试白名单则
+使用 `ling app ota whitelist add --self`。
 
 查看协议帧或保存返回的 TTS：
 

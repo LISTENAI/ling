@@ -709,7 +709,6 @@ name = "ling"
 version = "0.2.0-beta.3"
 dependencies = [
  "anyhow",
- "base64",
  "clap",
  "dirs",
  "getrandom 0.3.4",

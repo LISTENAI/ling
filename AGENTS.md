@@ -71,11 +71,12 @@
 - Upload text through the same binary data path as the device client. Send
   16 kHz, 16-bit little-endian mono PCM at real-time playback speed.
 - Reuse a random, per-install CLI Device ID unless the user supplies a
-  one-request override. Generated IDs must keep a recognizable `ling-cli-`
-  prefix, and all generated and user-supplied Device IDs must remain within
-  1-32 characters. Reject invalid persisted CLI IDs before platform access;
-  never migrate or silently rewrite them. Recovery must be an explicit local
-  reset command.
+  one-request override. Generate IDs as `ling_` followed by eight lowercase
+  ASCII letters or digits. Do not infer or enforce server-side Device ID
+  validation rules. Submit explicit and persisted values verbatim and preserve
+  the service's error details. Rotate the persisted identity only through
+  `ling config device-id reset`. Import it with `ling app device add --self`
+  or `ling app ota whitelist add --self`.
 - Redact credentials from default human-readable interaction output. Keep
   protocol frames intact only in explicitly requested verbose diagnostics.
 - Treat device tool names, descriptions, and input schemas as compatibility

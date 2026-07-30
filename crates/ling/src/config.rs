@@ -1,10 +1,10 @@
-use anyhow::{bail, Context, Result};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 
-pub const MAX_DEVICE_ID_CHARS: usize = 32;
-const CLI_DEVICE_ID_PREFIX: &str = "ling-cli-";
+const CLI_DEVICE_ID_PREFIX: &str = "ling_";
+const CLI_DEVICE_ID_RANDOM_CHARS: usize = 8;
+const CLI_DEVICE_ID_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct LingConfig {
@@ -35,17 +35,14 @@ impl LingConfig {
     }
 
     pub fn load_or_create_device_id() -> Result<String> {
+        Self::show_device_id()
+    }
+
+    pub fn show_device_id() -> Result<String> {
         let mut config = Self::load()?;
         if let Some(device_id) = config.cli_device_id.clone() {
-            validate_local_device_id(&device_id).map_err(|error| {
-                anyhow::anyhow!(
-                    "本地 Device ID `{device_id}` 不符合要求：{error}\n\
-                     请运行 `ling app device reset-local-id` 重新生成"
-                )
-            })?;
             return Ok(device_id);
         }
-
         let device_id = generate_cli_device_id()?;
         config.cli_device_id = Some(device_id.clone());
         config.save()?;
@@ -61,42 +58,17 @@ impl LingConfig {
     }
 }
 
-pub fn normalize_device_id(device_id: &str) -> Result<String> {
-    let device_id = device_id.trim();
-    if device_id.is_empty() {
-        bail!("Device ID 不能为空");
-    }
-    let length = device_id.chars().count();
-    if length > MAX_DEVICE_ID_CHARS {
-        bail!("Device ID 最多 {MAX_DEVICE_ID_CHARS} 个字符，当前 {length} 个字符");
-    }
-    Ok(device_id.to_owned())
-}
-
 fn generate_cli_device_id() -> Result<String> {
-    let mut bytes = [0_u8; 16];
+    let mut bytes = [0_u8; CLI_DEVICE_ID_RANDOM_CHARS];
     getrandom::fill(&mut bytes)
         .map_err(|error| anyhow::anyhow!("生成 CLI Device ID 失败：{error}"))?;
-    Ok(format!(
-        "{CLI_DEVICE_ID_PREFIX}{}",
-        URL_SAFE_NO_PAD.encode(bytes)
-    ))
-}
-
-fn validate_local_device_id(device_id: &str) -> Result<()> {
-    let Some(encoded) = device_id.strip_prefix(CLI_DEVICE_ID_PREFIX) else {
-        bail!("缺少 `{CLI_DEVICE_ID_PREFIX}` 前缀");
-    };
-    if device_id.len() != 31 || encoded.len() != 22 {
-        bail!("应为 `{CLI_DEVICE_ID_PREFIX}` 加 22 位随机字符");
-    }
-    let decoded = URL_SAFE_NO_PAD
-        .decode(encoded)
-        .context("随机部分不是有效的 URL-safe 编码")?;
-    if decoded.len() != 16 {
-        bail!("随机部分必须包含 128 bit 数据");
-    }
-    Ok(())
+    let random = bytes
+        .iter()
+        .map(|byte| {
+            CLI_DEVICE_ID_ALPHABET[usize::from(*byte) % CLI_DEVICE_ID_ALPHABET.len()] as char
+        })
+        .collect::<String>();
+    Ok(format!("{CLI_DEVICE_ID_PREFIX}{random}"))
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -133,7 +105,7 @@ mod tests {
 
         LingConfig {
             api_key: Some("saved-key".to_owned()),
-            cli_device_id: Some("ling-cli-existing".to_owned()),
+            cli_device_id: Some("ling_cli_existing".to_owned()),
         }
         .save()
         .expect("save config");
@@ -149,7 +121,7 @@ mod tests {
                 .expect("load config")
                 .cli_device_id
                 .as_deref(),
-            Some("ling-cli-existing")
+            Some("ling_cli_existing")
         );
         let _ = fs::remove_dir_all(dir);
     }
@@ -165,17 +137,21 @@ mod tests {
         let second = LingConfig::load_or_create_device_id().expect("reuse device id");
 
         assert_eq!(first, second);
-        assert_eq!(first.len(), 31);
+        assert_eq!(
+            first.len(),
+            CLI_DEVICE_ID_PREFIX.len() + CLI_DEVICE_ID_RANDOM_CHARS
+        );
+        assert!(first
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'));
+        assert!(!first.contains('-'));
         let encoded = first
             .strip_prefix(CLI_DEVICE_ID_PREFIX)
             .expect("recognizable CLI prefix");
-        assert_eq!(
-            URL_SAFE_NO_PAD
-                .decode(encoded)
-                .expect("URL-safe random ID")
-                .len(),
-            16
-        );
+        assert_eq!(encoded.len(), CLI_DEVICE_ID_RANDOM_CHARS);
+        assert!(encoded
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte.is_ascii_lowercase()));
         assert_eq!(
             LingConfig::load()
                 .expect("load persisted config")
@@ -187,31 +163,36 @@ mod tests {
     }
 
     #[test]
-    fn invalid_saved_device_ids_are_rejected_without_migration() {
+    fn saved_device_ids_are_reused_verbatim() {
         let guard = EnvGuard::new(&["LING_CONFIG"]);
-        let dir = temp_path("ling-config-invalid-device-id-test");
+        let dir = temp_path("ling-config-existing-device-id-test");
         let path = dir.join("config.json");
         guard.set_var("LING_CONFIG", &path);
 
-        for invalid_device_id in [
+        for device_id in [
             "123e4567e89b42d3a456426614174000",
             "ling-cli-123e4567-e89b-42d3-a456-426614174000",
+            "ling_cli_123e4567e89b42d3",
+            "ling_ab-cdefg",
+            "ling_ABCDEFGH",
         ] {
             LingConfig {
                 api_key: Some("saved-key".to_owned()),
-                cli_device_id: Some(invalid_device_id.to_owned()),
+                cli_device_id: Some(device_id.to_owned()),
             }
             .save()
-            .expect("save invalid config");
+            .expect("save config");
 
-            let error = LingConfig::load_or_create_device_id()
-                .expect_err("invalid local ID must require an explicit reset");
-
-            let message = format!("{error:#}");
-            assert!(message.contains("本地 Device ID"));
-            assert!(message.contains("ling app device reset-local-id"));
+            assert_eq!(
+                LingConfig::show_device_id().expect("show persisted ID"),
+                device_id
+            );
+            assert_eq!(
+                LingConfig::load_or_create_device_id().expect("reuse persisted ID"),
+                device_id
+            );
             let persisted = LingConfig::load().expect("load unchanged config");
-            assert_eq!(persisted.cli_device_id.as_deref(), Some(invalid_device_id));
+            assert_eq!(persisted.cli_device_id.as_deref(), Some(device_id));
             assert_eq!(persisted.api_key.as_deref(), Some("saved-key"));
         }
         let _ = fs::remove_dir_all(dir);
@@ -233,22 +214,11 @@ mod tests {
 
         let device_id = LingConfig::reset_local_device_id().expect("reset device id");
 
-        validate_local_device_id(&device_id).expect("valid replacement ID");
+        assert_ne!(device_id, "invalid-device-id");
         let persisted = LingConfig::load().expect("load reset config");
         assert_eq!(persisted.cli_device_id.as_deref(), Some(device_id.as_str()));
         assert_eq!(persisted.api_key.as_deref(), Some("saved-key"));
         let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn device_id_length_is_limited_to_model_schema() {
-        assert_eq!(
-            normalize_device_id(" ling-cli-Ej5FZ-ibQtOkVkJmFBdAAA ").unwrap(),
-            "ling-cli-Ej5FZ-ibQtOkVkJmFBdAAA"
-        );
-        let error = normalize_device_id(&"x".repeat(MAX_DEVICE_ID_CHARS + 1))
-            .expect_err("oversized device id should fail");
-        assert!(error.to_string().contains("最多 32 个字符"));
     }
 
     #[test]
