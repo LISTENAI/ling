@@ -464,8 +464,6 @@ enum OtaCommand {
         ota_mode: String,
         #[arg(long)]
         description: Option<String>,
-        #[arg(long = "minimum-version")]
-        minimum_version: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -478,18 +476,15 @@ enum OtaCommand {
     /// Edit an OTA package.
     Edit {
         package_id: String,
+        /// Replace the firmware package.
         #[arg(long)]
         file: Option<PathBuf>,
+        /// Update the human-readable version.
         #[arg(long)]
         version: Option<String>,
-        #[arg(long = "version-number")]
-        version_number: Option<u64>,
-        #[arg(long = "ota-mode", value_parser = ["selectable", "mandatory"])]
-        ota_mode: Option<String>,
+        /// Update the release description.
         #[arg(long)]
         description: Option<String>,
-        #[arg(long = "minimum-version")]
-        minimum_version: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -2420,9 +2415,7 @@ async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<
             let item = items
                 .into_iter()
                 .find(|item| {
-                    ["id", "package_id"].iter().any(|key| {
-                        item.get(key).and_then(Value::as_str) == Some(package_id.as_str())
-                    })
+                    item.get("package_id").and_then(Value::as_str) == Some(package_id.as_str())
                 })
                 .with_context(|| format!("未找到 OTA 包：{package_id}"))?;
             if json {
@@ -2438,7 +2431,6 @@ async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<
             version_number,
             ota_mode,
             description,
-            minimum_version,
             json,
         } => {
             let output = management::upload_ota(
@@ -2452,7 +2444,6 @@ async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<
                     version_number: Some(version_number),
                     ota_mode: Some(&ota_mode),
                     description: description.as_deref(),
-                    minimum_version: minimum_version.as_deref(),
                 },
             )
             .await?;
@@ -2462,19 +2453,10 @@ async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<
             package_id,
             file,
             version,
-            version_number,
-            ota_mode,
             description,
-            minimum_version,
             json,
         } => {
-            if file.is_none()
-                && version.is_none()
-                && version_number.is_none()
-                && ota_mode.is_none()
-                && description.is_none()
-                && minimum_version.is_none()
-            {
+            if file.is_none() && version.is_none() && description.is_none() {
                 anyhow::bail!("ota edit 至少需要一个修改参数");
             }
             let output = management::upload_ota(
@@ -2485,10 +2467,9 @@ async fn ota_command(cli: &Ctx, args: OtaArgs, selector: AppSelector) -> Result<
                 management::OtaForm {
                     file: file.as_deref(),
                     version: version.as_deref(),
-                    version_number,
-                    ota_mode: ota_mode.as_deref(),
+                    version_number: None,
+                    ota_mode: None,
                     description: description.as_deref(),
-                    minimum_version: minimum_version.as_deref(),
                 },
             )
             .await?;
@@ -4105,7 +4086,7 @@ fn render_ota_package(value: &Value) -> String {
             .unwrap_or_else(|| "-".to_owned())
     };
     [
-        ("ID", field(&["id", "package_id"])),
+        ("OTA 包 ID", field(&["package_id"])),
         ("版本", field(&["version"])),
         ("版本号", field(&["version_number", "versionNumber"])),
         ("模式", field(&["ota_mode", "otaMode"])),
@@ -4806,6 +4787,88 @@ mod tests {
     }
 
     #[test]
+    fn ota_edit_only_accepts_mutable_fields() {
+        let cli = Cli::try_parse_from([
+            "ling",
+            "app",
+            "ota",
+            "edit",
+            "ota-1",
+            "--version",
+            "2.4.1",
+            "--description",
+            "修订说明",
+        ])
+        .expect("parse mutable OTA edit fields");
+
+        match cli.command {
+            Command::App(AppArgs {
+                command:
+                    AppCommand::Ota(OtaArgs {
+                        command:
+                            OtaCommand::Edit {
+                                package_id,
+                                version,
+                                description,
+                                ..
+                            },
+                    }),
+                ..
+            }) => {
+                assert_eq!(package_id, "ota-1");
+                assert_eq!(version.as_deref(), Some("2.4.1"));
+                assert_eq!(description.as_deref(), Some("修订说明"));
+            }
+            other => panic!("expected ota edit command, got {other:?}"),
+        }
+
+        for immutable in [
+            ["--version-number", "241"],
+            ["--ota-mode", "mandatory"],
+            ["--minimum-version", "2.0.0"],
+        ] {
+            let error = Cli::try_parse_from([
+                "ling",
+                "app",
+                "ota",
+                "edit",
+                "ota-1",
+                immutable[0],
+                immutable[1],
+            ])
+            .expect_err("immutable OTA field must be rejected");
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
+
+        let error = Cli::try_parse_from([
+            "ling",
+            "app",
+            "ota",
+            "upload",
+            "firmware.bin",
+            "--version",
+            "2.4.1",
+            "--version-number",
+            "241",
+            "--ota-mode",
+            "mandatory",
+            "--minimum-version",
+            "2.0.0",
+        ])
+        .expect_err("unavailable OTA field must be rejected during upload");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn ota_edit_help_only_lists_supported_fields() {
+        let help = rendered_help(&["ling", "app", "ota", "edit"]);
+        assert!(help.contains("--version <VERSION>"));
+        assert!(!help.contains("--version-number"));
+        assert!(!help.contains("--ota-mode"));
+        assert!(!help.contains("--minimum-version"));
+    }
+
+    #[test]
     fn lexicon_import_preserves_line_numbers_and_ignores_blank_lines() {
         assert_eq!(
             lexicon_import_entries("  ListenAI  \n\n小聆\nListenAI\n"),
@@ -4867,13 +4930,15 @@ mod tests {
     #[test]
     fn renders_ota_package_summary() {
         let summary = render_ota_package(&serde_json::json!({
-            "id": "ota-1",
+            "id": 1979,
+            "package_id": "33348d36417b86caf8f174db332ae644",
             "version": "2.4.0",
             "version_number": 240,
             "ota_mode": "mandatory",
             "status": "draft"
         }));
-        assert!(summary.contains("ID: ota-1"));
+        assert!(summary.contains("OTA 包 ID: 33348d36417b86caf8f174db332ae644"));
+        assert!(!summary.contains("1979"));
         assert!(summary.contains("版本号: 240"));
         assert!(summary.contains("状态: draft"));
     }

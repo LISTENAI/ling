@@ -143,6 +143,9 @@ ling app ota whitelist add <device_id>
 ling app ota whitelist delete <device_id>
 ```
 
+- 复制 `ota list` 或 `ota show` 展示的“OTA 包 ID”，用于后续的 `show`、
+  `edit` 和 `delete`。
+- `ota edit` 可替换固件文件，或修改 `--version` 和 `--description`。
 - `role show` 以表格列出 `role edit --set` 可用的准确 Key、当前值、类型和
   限制；长文本和一对多配置会在表格下方展开。
 - `wakeword generate` 的唤醒词名最多 12 个字符，`--description` 最多 120 个

@@ -739,11 +739,11 @@ pub fn render_role_wakeup_word(role_id: &str, value: &Value) -> Result<String> {
 pub fn render_management_ota_list(value: &Value) -> Result<String> {
     render_resource_list(
         value,
-        &["ID", "版本", "版本号", "模式", "状态", "描述"],
+        &["OTA 包 ID", "版本", "版本号", "模式", "状态", "描述"],
         "OTA 包",
         |item| {
             vec![
-                first_field(item, &["id", "package_id"]),
+                field(item, "package_id"),
                 field(item, "version"),
                 first_field(item, &["version_number", "versionNumber"]),
                 first_field(item, &["ota_mode", "otaMode"]),
@@ -1343,6 +1343,27 @@ mod tests {
         let output = render_role_wakeup_word("role-1", &detail).unwrap();
         assert!(output.contains("角色 ID: role-1"));
         assert!(output.contains("唤醒词: 小聆小聆"));
+    }
+
+    #[test]
+    fn renders_ota_package_id_instead_of_internal_record_id() {
+        let value = json!({
+            "data": [{
+                "id": 1979,
+                "package_id": "33348d36417b86caf8f174db332ae644",
+                "version": "0.1.0",
+                "version_number": 1,
+                "ota_mode": "selectable",
+                "status": 0
+            }],
+            "page": 1,
+            "pageSize": 20,
+            "total": 1
+        });
+        let output = render_management_ota_list(&value).unwrap();
+        assert!(output.contains("OTA 包 ID"));
+        assert!(output.contains("33348d36417b86caf8f174db332ae644"));
+        assert!(!output.contains("1979"));
     }
 
     #[test]

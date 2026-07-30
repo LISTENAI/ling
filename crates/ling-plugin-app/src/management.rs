@@ -327,7 +327,6 @@ pub struct OtaForm<'a> {
     pub version_number: Option<u64>,
     pub ota_mode: Option<&'a str>,
     pub description: Option<&'a str>,
-    pub minimum_version: Option<&'a str>,
 }
 
 pub async fn upload_ota(
@@ -368,9 +367,6 @@ pub async fn upload_ota(
     }
     if let Some(value) = fields.description {
         form = form.text("description", value.to_owned());
-    }
-    if let Some(value) = fields.minimum_version {
-        form = form.text("minimum_version", value.to_owned());
     }
 
     let mut segments = vec!["ota", "packages"];
