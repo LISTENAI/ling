@@ -169,6 +169,8 @@ ling app --product-id <product_id> request \
   --product-secret '<product_secret>' --text 你好 --output-tts reply.mp3
 ```
 
+`--output-tts` 将首个 TTS 音频原样保存为 MP3 文件，不执行格式转换。
+
 使用返回的 SID 回查请求：
 
 ```bash

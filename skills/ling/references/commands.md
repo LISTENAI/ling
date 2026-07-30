@@ -231,6 +231,8 @@ ling app trace <sid> --json
 时间线，`--verbose` 逐行输出带方向的原始诊断事件。请求汇总和鉴权错误会
 显示实际 Device ID；`--device-id` 只覆盖本次请求。
 `--llm-app` 只用于用户明确要求的定向诊断。
+`--output-tts <file.mp3>` 将首个 TTS 音频原样保存为 MP3 文件，不执行格式
+转换。
 
 默认时间线把 `initialize` 和 `tools/list` 折叠成工具数量和名称摘要；需要
 完整的工具描述和 JSON Schema 时用 `--verbose`。`tools/call` 的参数和结果

@@ -376,8 +376,8 @@ struct RequestArgs {
     /// Show every protocol frame with timestamp and direction.
     #[arg(long)]
     verbose: bool,
-    /// Download the first returned TTS URL to this file.
-    #[arg(long = "output-tts", value_name = "FILE")]
+    /// Download the first returned TTS audio as MP3 without format conversion.
+    #[arg(long = "output-tts", value_name = "MP3_FILE")]
     output_tts: Option<PathBuf>,
 }
 
@@ -1685,7 +1685,7 @@ async fn request_command(cli: &Ctx, args: RequestArgs, selector: AppSelector) ->
             Some((path, bytes))
         }
         (Some(_), None) => {
-            anyhow::bail!("未收到 TTS URL，无法使用 --output-tts 保存音频")
+            anyhow::bail!("未收到 TTS URL，无法使用 --output-tts 保存 MP3")
         }
         (None, _) => None,
     };
@@ -1703,7 +1703,7 @@ async fn request_command(cli: &Ctx, args: RequestArgs, selector: AppSelector) ->
         println!("- 文本 URL: {url}");
     }
     if let Some((path, bytes)) = saved_tts {
-        println!("- TTS 文件: {}（{bytes} bytes）", path.display());
+        println!("- TTS MP3 文件: {}（{bytes} bytes）", path.display());
     }
     println!("- 耗时: {:.2}s", elapsed.as_secs_f64());
     println!("- 上行: {upstream_frames} 帧，{upstream_bytes} bytes");
@@ -5387,6 +5387,13 @@ mod tests {
             },
             other => panic!("expected app command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn app_request_help_describes_tts_output_as_mp3() {
+        let help = rendered_help(&["ling", "app", "request"]);
+        assert!(help.contains("--output-tts <MP3_FILE>"));
+        assert!(help.contains("as MP3 without format conversion"));
     }
 
     #[test]

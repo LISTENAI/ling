@@ -111,7 +111,8 @@ ling app --product-id <product_id> request \
 - 默认输出带时间和方向的双向事件摘要，MCP 的 `initialize` 和 `tools/list`
   折叠为工具数量和名称。
 - 只有需要逐事件排查时才使用 `--verbose`；分享输出前先脱敏。
-- `--output-tts <file>` 保存首个 TTS 音频。
+- `--output-tts <file.mp3>` 将首个 TTS 音频原样保存为 MP3 文件，不执行
+  格式转换。
 - 默认使用 CLI 管理的 Device ID。只有用户明确指定设备身份时才传
   `--device-id`；只有用户明确要求定向诊断某个 App ID 时才传
   `--llm-app`。
