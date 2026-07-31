@@ -200,8 +200,9 @@ ling kb query <index_id> 空调怎么开
 
 ### 真实设备绑定
 
-Product ID 可通过 `ling app list` 获取，Product Secret 可在平台应用详情中
-查看：
+Product ID 可通过 `ling app list` 获取，当前账号可管理应用的 Product Secret
+可通过 `ling app inspect <product_id>` 获取。设备命令中的 SID 指 Product
+Secret，不是 `request/trace` 使用的会话 SID：
 
 ```bash
 adb shell device set_pid <product_id>

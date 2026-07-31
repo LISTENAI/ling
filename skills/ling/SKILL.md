@@ -58,11 +58,17 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 - `ling app request` 默认会自行读取当前账号可管理应用的鉴权信息。模拟当前
   账号无权管理的应用时，必须由用户本人在终端同时传入完整的
   `--product-id` 和 `--product-secret`；不要索取或代填 Secret。
+- Product Secret 敏感不等于必须把操作交给用户。绑定当前账号可管理的真实
+  设备时，捕获 `ling app inspect --json` 的本地输出并取得完整 Product
+  Secret，只在本地进程间传给设备写入命令；不要直接显示、转述或保存。
+  服务端没有返回完整值时，才让用户通过本地隐藏输入补充，输入完成后仍由
+  Agent 继续写入。
 - `inspect`、`request --verbose`、`trace --verbose/--json` 和
   `ai asr --verbose` 可能包含敏感应用信息、会话标识、对话、请求上下文或
   工具结果；展示和转述前先脱敏。
-- 真实设备 SID 属于敏感配置。需要用户输入时，让用户在自己的终端完成，
-  不要要求其粘贴到对话中。
+- 设备命令 `set_sid` 写入的是 Product Secret；`request/trace` 返回的会话
+  SID 是另一种标识，不得混用。需要用户补充 Product Secret 时，不要要求
+  其粘贴到对话中。
 
 ## 网页操作边界
 

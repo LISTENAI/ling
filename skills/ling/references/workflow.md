@@ -160,18 +160,30 @@ ling app trace <sid>
 ## 5. 真实设备 PID/SID 切换
 
 用于“切设备 PID”“切应用”“换设备绑定”等需求。此流程不需要拉取或编译
-任何代码仓库。
+任何代码仓库。用户明确要求绑定或切换设备，即授权 Agent 对已确认的设备
+执行本节中的 PID 和 SID 写入；不要仅因 Product Secret 敏感而把 SID 写入
+交回用户。
 
 1. 按目标应用选择规则确认 Product ID。
-2. 让用户在自己的终端准备设备 SID，不要要求其把敏感值粘贴到对话中。
-3. 由用户在自己的终端写入：
+2. 运行 `adb devices` 检查设备。没有设备或设备未授权时，引导用户连接并
+   接受 USB 调试授权，然后继续同一流程。此时只把无法代办的物理连接和
+   设备授权交给用户，并明确连接后 Agent 会继续写入 Product ID 和 Product
+   Secret；不要告诉用户稍后自行写入 SID。检测到多台设备时，让用户确认
+   目标设备。
+3. 捕获 `ling app inspect --json` 的本地输出并取得目标应用的完整 Product
+   Secret，不要让该命令的标准输出直接进入回复或日志。只有 CLI 确实取不
+   到完整值时，才让用户通过本地隐藏输入补充；不要要求用户把它粘贴到
+   对话中。
+4. Agent 将 Product ID 和 Product Secret 都写入已确认的设备：
 
    ```bash
    adb shell device set_pid <product_id>
-   adb shell device set_sid <sid>
+   adb shell device set_sid <product_secret>
    ```
 
-4. 重新唤醒或重连设备，验证应用配置生效。
+   向设备传递 Product Secret 时使用不会回显或记录完整值的本地方式。两条
+   命令都成功前，不要宣告绑定完成。
+5. 重新唤醒或重连设备，验证应用配置生效。
 
 如果需求只是模拟设备请求，不执行上述设备写入，直接使用：
 
