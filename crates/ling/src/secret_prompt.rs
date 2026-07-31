@@ -204,10 +204,9 @@ mod platform {
                 .as_secs()
                 .try_into()
                 .expect("timeout seconds fit in timeval"),
-            tv_usec: timeout
-                .subsec_micros()
-                .try_into()
-                .expect("timeout microseconds fit in timeval"),
+            // `tv_usec` is i64 on Linux and i32 on macOS. Subsecond
+            // microseconds are always at most 999,999, so both fit.
+            tv_usec: timeout.subsec_micros() as _,
         };
 
         loop {
