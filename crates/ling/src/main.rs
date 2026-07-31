@@ -2085,7 +2085,7 @@ async fn role_command(cli: &Ctx, args: RoleArgs, selector: AppSelector) -> Resul
             }
         }
         RoleCommand::Create { name, input, json } => {
-            let mut body = json_body_from_input(input, role_edit_key)?;
+            let mut body = role_body_from_input(input)?;
             body.as_object_mut()
                 .context("角色请求必须是 JSON 对象")?
                 .insert("name".to_owned(), Value::String(name));
@@ -2104,7 +2104,7 @@ async fn role_command(cli: &Ctx, args: RoleArgs, selector: AppSelector) -> Resul
             input,
             json,
         } => {
-            let mut body = json_body_from_input(input, role_edit_key)?;
+            let mut body = role_body_from_input(input)?;
             ensure_non_empty_object(&body, "role edit")?;
             if body.get("tts").is_some() {
                 let detail = management::get_resource(
@@ -4234,6 +4234,14 @@ fn role_edit_key(key: &str) -> String {
     }
 }
 
+fn role_body_from_input(input: JsonEditArgs) -> Result<Value> {
+    let body = json_body_from_input(input, role_edit_key)?;
+    if body.get("description").is_some() {
+        anyhow::bail!("角色配置不支持 key：description");
+    }
+    Ok(body)
+}
+
 fn json_body_from_input<F>(input: JsonEditArgs, map_key: F) -> Result<Value>
 where
     F: Fn(&str) -> String,
@@ -4522,23 +4530,37 @@ mod tests {
 
     #[test]
     fn role_set_builds_nested_tts_json_and_literals() {
-        let body = json_body_from_input(
-            JsonEditArgs {
-                set: vec![
-                    "vcn=x4_yezi".to_owned(),
-                    "speed=60".to_owned(),
-                    "idle_guide.interval_ms=3000".to_owned(),
-                    "enabled=on".to_owned(),
-                ],
-                file: None,
-            },
-            role_edit_key,
-        )
+        let body = role_body_from_input(JsonEditArgs {
+            set: vec![
+                "vcn=x4_yezi".to_owned(),
+                "speed=60".to_owned(),
+                "idle_guide.interval_ms=3000".to_owned(),
+                "enabled=on".to_owned(),
+            ],
+            file: None,
+        })
         .unwrap();
         assert_eq!(body["tts"]["vcn"], "x4_yezi");
         assert_eq!(body["tts"]["speed"], 60);
         assert_eq!(body["idle_guide"]["interval_ms"], 3000);
         assert_eq!(body["enabled"], true);
+    }
+
+    #[test]
+    fn role_description_is_not_a_public_configuration_field() {
+        let error = role_body_from_input(JsonEditArgs {
+            set: vec!["description=unused".to_owned()],
+            file: None,
+        })
+        .expect_err("role description is not used by the product");
+
+        assert_eq!(error.to_string(), "角色配置不支持 key：description");
+        let persona = role_body_from_input(JsonEditArgs {
+            set: vec!["persona=角色描述".to_owned()],
+            file: None,
+        })
+        .expect("persona remains editable");
+        assert_eq!(persona["persona"], "角色描述");
     }
 
     #[test]

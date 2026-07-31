@@ -152,6 +152,8 @@ ling app ota whitelist delete <device_id>
 - `ota edit` 可替换固件文件，或修改 `--version` 和 `--description`。
 - `role show` 以表格列出 `role edit --set` 可用的准确 Key、当前值、类型和
   限制；长文本和一对多配置会在表格下方展开。
+- 网页中的“角色描述”对应 `persona`，创建或修改时使用
+  `--set persona=...`。
 - `wakeword generate` 的唤醒词名最多 12 个字符，`--description` 最多 120 个
   字符，`--sensitivity` 取 `low`/`medium`/`high`（默认 `medium`）。可不传
   应答语，最多接受 5 条 `--response`；单条应答语最多 12 个字符。以上校验

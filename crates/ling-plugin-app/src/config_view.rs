@@ -433,14 +433,8 @@ pub fn render_management_role_detail(value: &Value) -> Result<String> {
                 "非空文本 ≤12".to_owned(),
             ],
             vec![
-                "description".to_owned(),
-                "角色描述".to_owned(),
-                role_text_preview(role, "description", 28),
-                "文本".to_owned(),
-            ],
-            vec![
                 "persona".to_owned(),
-                "人设".to_owned(),
+                "角色描述".to_owned(),
                 role_text_preview(role, "persona", 28),
                 "文本 ≤2000".to_owned(),
             ],
@@ -496,7 +490,7 @@ pub fn render_management_role_detail(value: &Value) -> Result<String> {
 
     if let Some(persona) = role.get("persona").and_then(Value::as_str) {
         if !persona.is_empty() {
-            output.push_str("\n\n人设全文（persona）:\n");
+            output.push_str("\n\n角色描述全文（persona）:\n");
             output.push_str(persona);
         }
     }
@@ -1307,13 +1301,15 @@ mod tests {
         assert!(output.contains("小聆老师"));
         assert!(output.contains("persona"));
         assert!(output.contains("先给结论，再讲理由。"));
+        assert!(!output.contains("description"));
+        assert!(!output.contains("默认角色"));
         assert!(output.contains("vcn"));
         assert!(output.contains("x4_lingxiaoyue_oral"));
         assert!(output.contains("idle_guide.interval_ms"));
         assert!(output.contains("3000"));
         assert!(output.contains("idle_guide.resources"));
         assert!(output.contains("1 条"));
-        assert!(output.contains("人设全文（persona）:"));
+        assert!(output.contains("角色描述全文（persona）:"));
         assert!(output.contains("唤醒词（使用 `role wakeword` 管理）:"));
         assert!(output.contains("闲时引导文案（idle_guide.resources）:"));
         assert!(output.contains("表情资源:"));
