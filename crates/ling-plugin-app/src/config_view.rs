@@ -689,7 +689,6 @@ pub fn render_management_wakeup_word_detail(value: &Value) -> Result<String> {
                 "生成".to_owned()
             },
         ),
-        ("描述", field(item, "description")),
         ("创建时间", field(item, "created_at")),
         ("更新时间", field(item, "updated_at")),
     ]
@@ -1321,7 +1320,6 @@ mod tests {
         let item = json!({
             "id": "word-1",
             "name": "小聆小聆",
-            "description": "系统唤醒词",
             "sensitivity": "medium",
             "status": "ready",
             "is_system": true,

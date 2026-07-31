@@ -87,7 +87,7 @@ ling app wakeword show <wakeword_id>
 ling app wakeword generate 小聆小聆 \
   --response "你好，我在"
 ling app wakeword generate 小聆小聆 \
-  --sensitivity high --description "客厅音箱"
+  --sensitivity high
 ling app wakeword responses <wakeword_id>
 ling app wakeword set-responses <wakeword_id> \
   "你好" "我在"
@@ -154,10 +154,10 @@ ling app ota whitelist delete <device_id>
   限制；长文本和一对多配置会在表格下方展开。
 - 网页中的“角色描述”对应 `persona`，创建或修改时使用
   `--set persona=...`。
-- `wakeword generate` 的唤醒词名最多 12 个字符，`--description` 最多 120 个
-  字符，`--sensitivity` 取 `low`/`medium`/`high`（默认 `medium`）。可不传
-  应答语，最多接受 5 条 `--response`；单条应答语最多 12 个字符。以上校验
-  都在提交前完成，参数写错不会触发计费。
+- `wakeword generate` 的唤醒词名最多 12 个字符，`--sensitivity` 取
+  `low`/`medium`/`high`（默认 `medium`）。可不传应答语，最多接受 5 条
+  `--response`；单条应答语最多 12 个字符。以上校验都在提交前完成，参数
+  写错不会触发计费。
 - 生成是异步且可能收费的操作。`generate` 和 `wakeword delete` 在非交互
   环境下直接失败并提示追加 `--yes`；该提示不构成授权，取得用户明确授权
   后才追加。

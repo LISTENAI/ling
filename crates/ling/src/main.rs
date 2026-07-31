@@ -685,9 +685,6 @@ enum WakewordCommand {
         /// Initial response text (1-12 chars). Repeat up to five times.
         #[arg(long = "response")]
         responses: Vec<String>,
-        /// Description, up to 120 characters.
-        #[arg(long)]
-        description: Option<String>,
         /// Skip the paid-generation confirmation prompt.
         #[arg(long)]
         yes: bool,
@@ -2278,18 +2275,11 @@ async fn wakeword_command(cli: &Ctx, args: AppWakewordArgs, selector: AppSelecto
             name,
             sensitivity,
             responses,
-            description,
             yes,
             json,
         } => {
             let name = validate_wakeup_word_name(&name)?;
             let responses = wakeup_word_responses(responses, true)?;
-            if description
-                .as_deref()
-                .is_some_and(|value| value.chars().count() > 120)
-            {
-                anyhow::bail!("唤醒词描述最多 120 个字符");
-            }
             if !yes
                 && !confirm(&format!(
                     "生成唤醒词「{name}」可能产生费用。确认提交生成任务？"
@@ -2304,9 +2294,6 @@ async fn wakeword_command(cli: &Ctx, args: AppWakewordArgs, selector: AppSelecto
             });
             if !responses.is_empty() {
                 body["responses"] = Value::Array(responses);
-            }
-            if let Some(description) = description {
-                body["description"] = Value::String(description);
             }
             let output = management::create_resource(
                 &cli.api_base_url,
@@ -4791,6 +4778,17 @@ mod tests {
             }
             other => panic!("expected wakeword generate command, got {other:?}"),
         }
+        assert!(Cli::try_parse_from([
+            "ling",
+            "app",
+            "wakeword",
+            "generate",
+            "小聆小聆",
+            "--description",
+            "客厅音箱",
+            "--yes",
+        ])
+        .is_err());
 
         let responses = Cli::try_parse_from([
             "ling",
