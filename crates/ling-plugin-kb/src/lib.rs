@@ -12,6 +12,37 @@ pub async fn list(api_base_url: &str, api_key: &str, page: u32, size: u32) -> Re
     request(Method::GET, url, api_key, None).await
 }
 
+/// Find a knowledge base name through the paginated list endpoint.
+pub async fn find_name(
+    api_base_url: &str,
+    api_key: &str,
+    index_id: &str,
+) -> Result<Option<String>> {
+    const PAGE_SIZE: u32 = 100;
+
+    for page in 1..=1000 {
+        let output = list(api_base_url, api_key, page, PAGE_SIZE).await?;
+        let items = output
+            .get("data")
+            .and_then(Value::as_array)
+            .context("知识库列表响应缺少 data 数组")?;
+
+        if let Some(name) = find_name_in_items(items, index_id) {
+            return Ok(Some(name));
+        }
+
+        let total = output.get("total").and_then(value_as_u64);
+        let reached_total = total
+            .map(|total| u64::from(page) * u64::from(PAGE_SIZE) >= total)
+            .unwrap_or(false);
+        if items.len() < PAGE_SIZE as usize || reached_total {
+            return Ok(None);
+        }
+    }
+
+    Ok(None)
+}
+
 /// 创建知识库（POST /v1/knowledge-bases）。
 pub async fn create(api_base_url: &str, api_key: &str, index_name: &str) -> Result<Value> {
     let url = ling_core::http_url(api_base_url, "/v1/knowledge-bases")?;
@@ -218,6 +249,22 @@ fn str_field(value: &Value, key: &str) -> String {
     }
 }
 
+fn find_name_in_items(items: &[Value], index_id: &str) -> Option<String> {
+    items.iter().find_map(|item| {
+        let item_id = str_field(item, "index_id");
+        let name = str_field(item, "index_name");
+        (item_id == index_id && name != "-").then_some(name)
+    })
+}
+
+fn value_as_u64(value: &Value) -> Option<u64> {
+    match value {
+        Value::Number(number) => number.as_u64(),
+        Value::String(text) => text.parse().ok(),
+        _ => None,
+    }
+}
+
 fn format_time(value: &str) -> String {
     if value.len() >= 16 {
         value[..16].replace('T', " ")
@@ -317,6 +364,27 @@ mod tests {
         let out = render_documents(&value).unwrap();
         assert!(out.contains("说明书.txt"));
         assert!(out.contains("处理成功"));
+    }
+
+    #[test]
+    fn finds_knowledge_base_name_by_id() {
+        let items = vec![
+            json!({"index_id": "kb-1", "index_name": "产品手册"}),
+            json!({"index_id": "kb-2", "index_name": "常见问题"}),
+        ];
+
+        assert_eq!(
+            find_name_in_items(&items, "kb-2").as_deref(),
+            Some("常见问题")
+        );
+        assert_eq!(find_name_in_items(&items, "kb-3"), None);
+    }
+
+    #[test]
+    fn reads_numeric_and_string_totals() {
+        assert_eq!(value_as_u64(&json!(42)), Some(42));
+        assert_eq!(value_as_u64(&json!("42")), Some(42));
+        assert_eq!(value_as_u64(&json!("many")), None);
     }
 
     #[test]

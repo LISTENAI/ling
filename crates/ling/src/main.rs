@@ -3719,10 +3719,13 @@ async fn kb_command(api_base_url: &str, args: KbArgs) -> Result<()> {
                 Ok(())
             }
         }
-        KbCommand::Delete { index_id, .. } => Err(web_only_operation(
-            &format!("删除知识库 {index_id}"),
-            PLATFORM_KB_URL,
-        )),
+        KbCommand::Delete { index_id, .. } => {
+            let name = ling_plugin_kb::find_name(api_base_url, &api_key, &index_id)
+                .await
+                .ok()
+                .flatten();
+            Err(knowledge_base_delete_operation(&index_id, name.as_deref()))
+        }
         KbCommand::Doc { index_id, command } => match command {
             KbDocCommand::List { page, size, json } => {
                 let output =
@@ -4040,6 +4043,14 @@ fn platform_write_unavailable(feature: &str, url: &str) -> anyhow::Error {
 
 fn web_only_operation(feature: &str, url: &str) -> anyhow::Error {
     web_operation_error(web_operation_message(feature, None, None, None, url), url)
+}
+
+fn knowledge_base_delete_operation(index_id: &str, name: Option<&str>) -> anyhow::Error {
+    let target = match name {
+        Some(name) => format!("删除知识库「{name}」（ID: {index_id}）"),
+        None => format!("删除知识库（ID: {index_id}）"),
+    };
+    web_only_operation(&target, PLATFORM_KB_URL)
 }
 
 #[derive(Debug)]
@@ -4612,6 +4623,14 @@ mod tests {
             kb_detail_url("kb with spaces"),
             "https://platform.listenai.com/datasets/detail?id=kb+with+spaces"
         );
+
+        let named = knowledge_base_delete_operation("kb-123", Some("产品手册")).to_string();
+        assert!(named.contains("删除知识库「产品手册」（ID: kb-123）"));
+        assert!(named.contains(PLATFORM_KB_URL));
+
+        let fallback = knowledge_base_delete_operation("kb-456", None).to_string();
+        assert!(fallback.contains("删除知识库（ID: kb-456）"));
+        assert!(fallback.contains(PLATFORM_KB_URL));
     }
 
     #[test]
