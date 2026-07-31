@@ -68,6 +68,17 @@ cargo build --release --locked -p ling
 ling 0.2.0-beta.1
 ```
 
+提交版本前，可以从 GitHub Actions 的 Release 工作流选择当前分支，并启用
+`dry_run`。它会执行完整的 8 平台构建、冒烟测试和打包，但不会创建或更新
+GitHub Release：
+
+```bash
+gh workflow run release.yml \
+  --ref main \
+  -f tag=v0.2.0-beta.1 \
+  -f dry_run=true
+```
+
 ### 4. 提交版本并推送 `main`
 
 ```bash

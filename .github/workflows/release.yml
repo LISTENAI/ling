@@ -11,6 +11,11 @@ on:
         description: "Existing tag to release, for example v0.2.0-beta.1"
         required: true
         type: string
+      dry_run:
+        description: "Build the selected ref without publishing a release"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -34,18 +39,21 @@ jobs:
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
       prerelease: ${{ steps.release.outputs.prerelease }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
+      dry_run: ${{ steps.release.outputs.dry_run }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && github.sha || github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
           persist-credentials: false
 
       - name: Validate tag and workspace versions
         id: release
         shell: bash
         env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
@@ -110,6 +118,8 @@ jobs:
             echo "tag=${tag}"
             echo "version=${version}"
             echo "prerelease=${prerelease}"
+            echo "source_sha=$(git rev-parse HEAD)"
+            echo "dry_run=${DRY_RUN}"
           } >> "${GITHUB_OUTPUT}"
 
   build:
@@ -174,7 +184,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.source_sha }}
           persist-credentials: false
 
       - name: Install Rust target
@@ -256,6 +266,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
+    if: needs.prepare.outputs.dry_run != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
