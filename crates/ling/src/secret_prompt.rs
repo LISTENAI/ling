@@ -1,5 +1,4 @@
-use anyhow::{Context, Result};
-use std::io::{self, Write};
+use anyhow::Result;
 
 const API_KEY_PROMPT: &str =
     "请打开 https://platform.listenai.com/keys 获取 API Key，然后粘贴到这里: ";
@@ -11,6 +10,8 @@ pub fn prompt_api_key() -> Result<String> {
 #[cfg(unix)]
 mod platform {
     use super::*;
+    use anyhow::Context;
+    use std::io::{self, Write};
     use std::time::Duration;
 
     const BRACKETED_PASTE_ENABLE: &[u8] = b"\x1b[?2004h";
@@ -199,8 +200,14 @@ mod platform {
         }
 
         let mut timeout = libc::timeval {
-            tv_sec: timeout.as_secs() as libc::time_t,
-            tv_usec: timeout.subsec_micros() as libc::suseconds_t,
+            tv_sec: timeout
+                .as_secs()
+                .try_into()
+                .expect("timeout seconds fit in timeval"),
+            tv_usec: timeout
+                .subsec_micros()
+                .try_into()
+                .expect("timeout microseconds fit in timeval"),
         };
 
         loop {
@@ -226,6 +233,19 @@ mod platform {
             }
         }
     }
+
+    fn write_stderr(bytes: &[u8]) -> io::Result<()> {
+        let mut stderr = io::stderr().lock();
+        stderr.write_all(bytes)?;
+        stderr.flush()
+    }
+
+    fn writeln_stderr(args: std::fmt::Arguments<'_>) -> io::Result<()> {
+        let mut stderr = io::stderr().lock();
+        stderr.write_fmt(args)?;
+        stderr.write_all(b"\n")?;
+        stderr.flush()
+    }
 }
 
 #[cfg(not(unix))]
@@ -237,17 +257,4 @@ mod platform {
         eprintln!("已读取 API Key：{}", crate::api_key::preview_key(&api_key));
         Ok(api_key)
     }
-}
-
-fn write_stderr(bytes: &[u8]) -> io::Result<()> {
-    let mut stderr = io::stderr().lock();
-    stderr.write_all(bytes)?;
-    stderr.flush()
-}
-
-fn writeln_stderr(args: std::fmt::Arguments<'_>) -> io::Result<()> {
-    let mut stderr = io::stderr().lock();
-    stderr.write_fmt(args)?;
-    stderr.write_all(b"\n")?;
-    stderr.flush()
 }

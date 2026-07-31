@@ -63,4 +63,6 @@ jobs:
 
       - name: Run unit tests
         # Keep this scoped to unit-test targets; integration tests under tests/ are intentionally excluded.
+        env:
+          RUSTFLAGS: -D warnings
         run: cargo test --workspace --lib --bins --locked
