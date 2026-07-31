@@ -86,7 +86,8 @@ brew install LISTENAI/tap/ling
 
 不要替用户猜目标应用。应用、角色、MCP、知识库、文档和专业词汇删除，以及
 OTA 正式发布/撤销和设备列表，只使用 CLI 返回的网页入口。强制白名单没有
-写入命令，`ling app device enforce` 只显示当前状态和网页入口。
+写入命令，`ling app device enforce` 只显示当前状态和网页入口。遇到网页
+交接时遵循主 Skill 的“网页操作边界”，停止自动执行并由用户本人完成。
 
 `tone` 操作的是合成提示音所使用的文案，不是音频文件。
 

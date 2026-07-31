@@ -23,6 +23,7 @@ const PLATFORM_APP_CONFIG_URL: &str = "https://platform.listenai.com/appConfig";
 const PLATFORM_APPLICATION_URL: &str = "https://platform.listenai.com/application";
 const PLATFORM_CUSTOM_FIRMWARE_URL: &str = "https://platform.listenai.com/customFirmware";
 const PLATFORM_KB_URL: &str = "https://platform.listenai.com/datasets";
+const OPEN_WEB_PROMPT: &str = "按 [Enter] 在浏览器中打开该链接；按 [Ctrl-C] 取消。";
 const MAX_HOTWORD_CHARS: usize = 24;
 const MAX_HOTWORDS_TOTAL_CHARS: usize = 1024;
 const APP_CONFIG_EDITABLE_KEYS: [&str; 8] = [
@@ -1146,7 +1147,12 @@ async fn main() -> ExitCode {
     match run(cli).await {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("Error: {err:?}");
+            if let Some(web_operation) = err.downcast_ref::<WebOperationError>() {
+                eprintln!("Error: {web_operation}");
+                prompt_to_open_web_operation(web_operation);
+            } else {
+                eprintln!("Error: {err:?}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -4020,14 +4026,97 @@ fn direct_request_product_id(selector: &AppSelector) -> Option<String> {
 }
 
 fn platform_write_unavailable(feature: &str, url: &str) -> anyhow::Error {
-    anyhow!(
-        "「{feature}」的平台开放 API 尚未上线，请暂时在平台网页端操作：{url}\n\
-         平台打通 API Key 授权链路后，ling 将在后续版本启用此命令。"
+    web_operation_error(
+        web_operation_message(
+            feature,
+            Some("平台开放 API 暂不支持该操作。"),
+            None,
+            None,
+            url,
+        ),
+        url,
     )
 }
 
 fn web_only_operation(feature: &str, url: &str) -> anyhow::Error {
-    anyhow!("CLI 不执行「{feature}」；请前往网页确认影响范围并操作：{url}")
+    web_operation_error(web_operation_message(feature, None, None, None, url), url)
+}
+
+#[derive(Debug)]
+struct WebOperationError {
+    message: String,
+    url: String,
+}
+
+impl std::fmt::Display for WebOperationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for WebOperationError {}
+
+fn web_operation_error(message: String, url: &str) -> anyhow::Error {
+    anyhow::Error::new(WebOperationError {
+        message,
+        url: url.to_owned(),
+    })
+}
+
+fn prompt_to_open_web_operation(operation: &WebOperationError) {
+    if !should_prompt_to_open_web_operation(io::stdin().is_terminal(), io::stderr().is_terminal()) {
+        return;
+    }
+
+    eprint!("\n{OPEN_WEB_PROMPT}");
+    if let Err(error) = io::stderr().flush() {
+        eprintln!("\n无法显示打开链接提示：{error}");
+        return;
+    }
+
+    let mut input = String::new();
+    match io::stdin().read_line(&mut input) {
+        Ok(bytes_read) if is_enter_input(bytes_read, &input) => {
+            if let Err(error) = webbrowser::open(&operation.url) {
+                eprintln!("无法打开默认浏览器：{error}");
+                eprintln!("请手动打开上述网址。");
+            } else {
+                eprintln!("已在默认浏览器中打开；请在网页完成操作。");
+            }
+        }
+        Ok(_) => eprintln!("未打开浏览器。"),
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+        Err(error) => eprintln!("\n无法读取确认输入：{error}"),
+    }
+}
+
+fn should_prompt_to_open_web_operation(stdin_is_terminal: bool, stderr_is_terminal: bool) -> bool {
+    stdin_is_terminal && stderr_is_terminal
+}
+
+fn is_enter_input(bytes_read: usize, input: &str) -> bool {
+    bytes_read > 0 && matches!(input, "\n" | "\r\n")
+}
+
+fn web_operation_message(
+    feature: &str,
+    reason: Option<&str>,
+    product_id: Option<&str>,
+    location: Option<&str>,
+    url: &str,
+) -> String {
+    let mut lines = vec![format!("此操作需要在网页完成：{feature}")];
+    if let Some(reason) = reason {
+        lines.push(format!("原因：{reason}"));
+    }
+    if let Some(product_id) = product_id {
+        lines.push(format!("目标应用：{product_id}"));
+    }
+    if let Some(location) = location {
+        lines.push(format!("操作位置：{location}"));
+    }
+    lines.push(format!("网页地址：{url}"));
+    lines.join("\n")
 }
 
 fn app_config_url(project_id: &str) -> String {
@@ -4041,17 +4130,23 @@ fn app_config_only_operation(feature: &str, project_id: &str) -> anyhow::Error {
 }
 
 fn application_only_operation(feature: &str, product_id: &str, section: &str) -> anyhow::Error {
-    anyhow!(
-        "CLI 不执行「{feature}」；请打开应用列表，选择 Product ID 为 {product_id} 的应用，\
-         进入「{section}」确认影响范围并操作：\n{PLATFORM_APPLICATION_URL}"
+    web_operation_error(
+        web_operation_message(
+            feature,
+            None,
+            Some(product_id),
+            Some(&format!("应用列表 > 选择目标应用 > {section}")),
+            PLATFORM_APPLICATION_URL,
+        ),
+        PLATFORM_APPLICATION_URL,
     )
 }
 
 fn device_list_guidance() -> String {
     format!(
         "CLI 暂不展示已导入设备列表。\n\
-         请打开小聆平台的应用列表，选择目标应用后进入「设备管理」查看：\n\
-         {PLATFORM_APPLICATION_URL}"
+         操作位置：应用列表 > 选择目标应用 > 设备管理\n\
+         网页地址：{PLATFORM_APPLICATION_URL}"
     )
 }
 
@@ -4064,8 +4159,9 @@ fn device_enforcement_summary(enabled: bool) -> String {
     format!(
         "强制白名单：{state}\n\
          接入规则：{rule}\n\n\
-         如需修改，请打开小聆平台的应用列表，选择目标应用后进入「设备管理」：\n\
-         {PLATFORM_APPLICATION_URL}"
+         如需修改，请在网页完成。\n\
+         操作位置：应用列表 > 选择目标应用 > 设备管理\n\
+         网页地址：{PLATFORM_APPLICATION_URL}"
     )
 }
 
@@ -4457,25 +4553,56 @@ mod tests {
         );
 
         let message = app_config_only_operation("删除角色 role-1", "project-123").to_string();
-        assert!(message.contains("CLI 不执行「删除角色 role-1」"));
-        assert!(message.contains("https://platform.listenai.com/appConfig?id=project-123"));
+        assert_eq!(
+            message,
+            "此操作需要在网页完成：删除角色 role-1\n\
+             网页地址：https://platform.listenai.com/appConfig?id=project-123"
+        );
+        let error = app_config_only_operation("删除角色 role-1", "project-123");
+        let operation = error
+            .downcast_ref::<WebOperationError>()
+            .expect("web operation keeps structured URL metadata");
+        assert_eq!(
+            operation.url,
+            "https://platform.listenai.com/appConfig?id=project-123"
+        );
     }
 
     #[test]
     fn application_web_only_operations_link_to_the_correct_drawer_section() {
         let delete = application_only_operation("删除应用", "product-123", "设置").to_string();
-        assert!(delete.contains("CLI 不执行「删除应用」"));
-        assert!(delete.contains("Product ID 为 product-123"));
-        assert!(delete.contains("进入「设置」"));
+        assert!(delete.starts_with("此操作需要在网页完成：删除应用\n"));
+        assert!(delete.contains("目标应用：product-123"));
+        assert!(delete.contains("操作位置：应用列表 > 选择目标应用 > 设置"));
+        assert!(delete.contains("网页地址：https://platform.listenai.com/application"));
         assert!(delete.contains(PLATFORM_APPLICATION_URL));
         assert!(!delete.contains("appConfig"));
 
         let ota =
             application_only_operation("正式发布 OTA 包 package-123", "product-123", "固件升级")
                 .to_string();
-        assert!(ota.contains("进入「固件升级」"));
+        assert!(ota.starts_with("此操作需要在网页完成：正式发布 OTA 包 package-123\n"));
+        assert!(ota.contains("操作位置：应用列表 > 选择目标应用 > 固件升级"));
         assert!(ota.contains(PLATFORM_APPLICATION_URL));
         assert!(!ota.contains("appConfig"));
+    }
+
+    #[test]
+    fn web_operation_prompt_is_tty_only_and_accepts_only_enter() {
+        assert_eq!(
+            OPEN_WEB_PROMPT,
+            "按 [Enter] 在浏览器中打开该链接；按 [Ctrl-C] 取消。"
+        );
+        assert!(should_prompt_to_open_web_operation(true, true));
+        assert!(!should_prompt_to_open_web_operation(true, false));
+        assert!(!should_prompt_to_open_web_operation(false, true));
+        assert!(!should_prompt_to_open_web_operation(false, false));
+
+        assert!(is_enter_input(1, "\n"));
+        assert!(is_enter_input(2, "\r\n"));
+        assert!(!is_enter_input(0, ""));
+        assert!(!is_enter_input(2, "q\n"));
+        assert!(!is_enter_input(2, " \n"));
     }
 
     #[test]
@@ -6180,6 +6307,9 @@ mod tests {
         let enabled = device_enforcement_summary(true);
         assert!(enabled.contains("强制白名单：已开启"));
         assert!(enabled.contains("仅已导入的设备可以接入此应用"));
+        assert!(enabled.contains("如需修改，请在网页完成"));
+        assert!(enabled.contains("操作位置：应用列表 > 选择目标应用 > 设备管理"));
+        assert!(enabled.contains("网页地址：https://platform.listenai.com/application"));
         assert!(enabled.contains(PLATFORM_APPLICATION_URL));
         assert!(!enabled.contains("appConfig"));
 
@@ -6190,7 +6320,8 @@ mod tests {
 
         let list = device_list_guidance();
         assert!(list.contains("暂不展示已导入设备列表"));
-        assert!(list.contains("选择目标应用"));
+        assert!(list.contains("操作位置：应用列表 > 选择目标应用 > 设备管理"));
+        assert!(list.contains("网页地址：https://platform.listenai.com/application"));
         assert!(list.contains(PLATFORM_APPLICATION_URL));
         assert!(!list.contains("appConfig"));
     }
@@ -6204,6 +6335,9 @@ mod tests {
 
         let message =
             platform_write_unavailable("唤醒词资源生成", PLATFORM_CUSTOM_FIRMWARE_URL).to_string();
+        assert!(message.starts_with("此操作需要在网页完成：唤醒词资源生成\n"));
+        assert!(message.contains("原因：平台开放 API 暂不支持该操作。"));
+        assert!(message.contains("网页地址：https://platform.listenai.com/customFirmware"));
         assert!(message.contains(PLATFORM_CUSTOM_FIRMWARE_URL));
         assert!(!message.contains("https://platform.listenai.com\n"));
     }

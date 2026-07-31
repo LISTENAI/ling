@@ -78,7 +78,15 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 | 删除账号级知识库 | `https://platform.listenai.com/datasets` |
 | 删除知识库文档 | `https://platform.listenai.com/datasets/detail?id=<index_id>` |
 
-- 不要绕过 CLI 限制直接调用这些接口。
+- 表中操作必须由用户本人在网页完成。Agent 只向用户转述目标操作、操作位置
+  和网页地址；不得使用浏览器自动化、Computer Use、网页内部接口或自行构造
+  HTTP 请求代为操作，即使浏览器已经登录也不例外。
+- 被 CLI 拒绝的网页限定写操作会返回非零状态，并统一输出“此操作需要在
+  网页完成”及“网页地址”；应用侧栏内的操作还会输出目标 Product ID 和
+  操作位置。看到这类输出后停止自动执行并交给用户，不要重试，也不要把它
+  当成操作授权。`device list` 和 `device enforce` 是只读指引，正常返回。
+- 真人交互终端会提供按 [Enter] 打开默认浏览器的提示。Agent 不得发送该
+  按键或以其他方式触发打开网页；非交互环境不会等待输入。
 - 明确允许的删除例外只有“生成”类唤醒词、未正式发布的 OTA 包和 OTA 测试
   白名单设备；执行唤醒词或 OTA 包删除前仍需用户确认。
 
