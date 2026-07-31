@@ -10,7 +10,7 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 
 ## 版本要求
 
-本 Skill 适用于 `ling >= 0.2.0`。
+本 Skill 适用于 `ling >= 1.0.0`。
 
 - 每个任务开始时运行一次 `ling --version`。
 - 版本低于要求时，说明需要升级并读取

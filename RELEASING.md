@@ -162,6 +162,6 @@ Remove-Item Env:LING_VERSION
 
 ## 发布正式版
 
-正式发布 `v0.2.0` 时，重复上述流程，将 workspace 版本和 Tag 分别改为
-`0.2.0`、`v0.2.0`。正式版会参与 GitHub Latest 选择，并在
+正式发布 `v1.0.0` 时，重复上述流程，将 workspace 版本和 Tag 分别改为
+`1.0.0`、`v1.0.0`。正式版会参与 GitHub Latest 选择，并在
 `HOMEBREW_TAP_TOKEN` 可用时触发 Homebrew Tap 更新。

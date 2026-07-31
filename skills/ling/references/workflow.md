@@ -14,7 +14,7 @@
 
 ## 0. CLI 检测与安装
 
-本 Skill 要求 `ling >= 0.2.0`。先运行：
+本 Skill 要求 `ling >= 1.0.0`。先运行：
 
 ```bash
 ling --version
