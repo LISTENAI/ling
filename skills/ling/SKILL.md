@@ -10,7 +10,7 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 
 ## 版本要求
 
-本 Skill 适用于 `ling >= 1.0.0`。
+本 Skill 适用于 `ling >= 1.0.1`。
 
 - 每个任务开始时运行一次 `ling --version`。
 - 版本低于要求时，说明需要升级并读取
@@ -55,6 +55,9 @@ description: ListenAI（聆思）平台本地 CLI 操作指南，覆盖安装登
 
 - 让用户本人在自己的终端运行 `ling login` 并输入 API Key；不要索取、
   代填、回显或记录完整密钥。
+- 用户要求退出登录时运行 `ling logout`。它只清除本机保存的 API Key，
+  不撤销平台密钥，也不更换本地 Device ID；如果 `LING_API_KEY` 仍在生效，
+  明确告知用户。
 - `ling app request` 默认会自行读取当前账号可管理应用的鉴权信息。模拟当前
   账号无权管理的应用时，必须由用户本人在终端同时传入完整的
   `--product-id` 和 `--product-secret`；不要索取或代填 Secret。

@@ -55,6 +55,12 @@ struct Cli {
 enum Command {
     /// Login with an API Key from platform.listenai.com/keys.
     Login(LoginArgs),
+    /// Forget the API Key saved by ling on this computer.
+    Logout {
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show the current API account.
     Account {
         /// Print the raw JSON response.
@@ -1175,6 +1181,10 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             login(ctx.api_base_url, args).await?;
             Ok(ExitCode::SUCCESS)
         }
+        Command::Logout { json } => {
+            logout_command(json)?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Account { json } => {
             account_command(ctx.api_base_url, json).await?;
             Ok(ExitCode::SUCCESS)
@@ -1222,6 +1232,31 @@ async fn login(api_base_url: String, args: LoginArgs) -> Result<()> {
         eprintln!("{}", api_key::render_login_success(&output, &api_base_url));
         Ok(())
     }
+}
+
+fn logout_command(json: bool) -> Result<()> {
+    let saved_api_key_removed = config::LingConfig::clear_saved_api_key()?;
+    let environment_api_key_active = std::env::var("LING_API_KEY")
+        .ok()
+        .map(|api_key| !api_key::strip_bearer(&api_key).is_empty())
+        .unwrap_or(false);
+
+    if json {
+        return print_json(&serde_json::json!({
+            "saved_api_key_removed": saved_api_key_removed,
+            "environment_api_key_active": environment_api_key_active,
+        }));
+    }
+
+    if saved_api_key_removed {
+        println!("已退出登录：本地保存的 API Key 已清除。");
+    } else {
+        println!("当前没有本地保存的登录凭据。");
+    }
+    if environment_api_key_active {
+        println!("注意：当前设置了 LING_API_KEY，后续命令仍会使用环境变量中的凭据。");
+    }
+    Ok(())
 }
 
 async fn account_command(api_base_url: String, json: bool) -> Result<()> {
@@ -5835,6 +5870,16 @@ mod tests {
                 assert!(login.json);
             }
             other => panic!("expected login command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_logout_json() {
+        let cli = Cli::try_parse_from(["ling", "logout", "--json"]).expect("parse logout json");
+
+        match cli.command {
+            Command::Logout { json } => assert!(json),
+            other => panic!("expected logout command, got {other:?}"),
         }
     }
 

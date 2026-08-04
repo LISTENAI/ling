@@ -14,7 +14,7 @@
 
 ## 0. CLI 检测与安装
 
-本 Skill 要求 `ling >= 1.0.0`。先运行：
+本 Skill 要求 `ling >= 1.0.1`。先运行：
 
 ```bash
 ling --version
@@ -53,6 +53,10 @@ brew install LISTENAI/tap/ling
 1. 用户未登录时，请其打开 `https://platform.listenai.com/keys` 获取 API Key。
 2. 运行 `ling login`，由用户本人在交互提示中输入密钥。
 3. 运行 `ling account` 验证账号。
+
+用户要求退出登录时运行 `ling logout`。它只清除本机保存的 API Key，保留
+本地 Device ID，也不会撤销平台上的密钥。如果输出提示 `LING_API_KEY` 仍在
+生效，向用户说明后续命令仍会使用环境变量中的凭据。
 
 不要要求用户把完整 API Key 粘贴到对话、日志或截图中。
 

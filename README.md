@@ -49,9 +49,12 @@ ling --version
 ```bash
 ling login
 ling account
+ling logout
 ```
 
 `ling login` 只显示脱敏预览，不回显完整 API Key。
+`ling logout` 只清除本机保存的 API Key，不撤销平台密钥，也不更换本地
+Device ID。如果设置了 `LING_API_KEY`，命令会提示环境变量中的凭据仍然生效。
 
 ## 常用用法
 

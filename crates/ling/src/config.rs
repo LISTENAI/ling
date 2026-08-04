@@ -56,6 +56,20 @@ impl LingConfig {
         config.save()?;
         Ok(device_id)
     }
+
+    pub fn clear_saved_api_key() -> Result<bool> {
+        let path = config_path()?;
+        if !path.exists() {
+            return Ok(false);
+        }
+
+        let mut config = Self::load()?;
+        let removed = config.api_key.take().is_some();
+        if removed {
+            config.save()?;
+        }
+        Ok(removed)
+    }
 }
 
 fn generate_cli_device_id() -> Result<String> {
@@ -219,6 +233,38 @@ mod tests {
         assert_eq!(persisted.cli_device_id.as_deref(), Some(device_id.as_str()));
         assert_eq!(persisted.api_key.as_deref(), Some("saved-key"));
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn logout_clears_only_the_saved_api_key() {
+        let guard = EnvGuard::new(&["LING_CONFIG"]);
+        let dir = temp_path("ling-config-logout-test");
+        let path = dir.join("config.json");
+        guard.set_var("LING_CONFIG", &path);
+
+        LingConfig {
+            api_key: Some("saved-key".to_owned()),
+            cli_device_id: Some("ling_abcdefgh".to_owned()),
+        }
+        .save()
+        .expect("save config");
+
+        assert!(LingConfig::clear_saved_api_key().expect("clear saved API key"));
+        let persisted = LingConfig::load().expect("load logged-out config");
+        assert!(persisted.api_key.is_none());
+        assert_eq!(persisted.cli_device_id.as_deref(), Some("ling_abcdefgh"));
+        assert!(!LingConfig::clear_saved_api_key().expect("repeat logout"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn logout_without_a_config_file_is_idempotent() {
+        let guard = EnvGuard::new(&["LING_CONFIG"]);
+        let path = temp_path("ling-config-logout-missing-test").join("config.json");
+        guard.set_var("LING_CONFIG", &path);
+
+        assert!(!LingConfig::clear_saved_api_key().expect("logout without config"));
+        assert!(!path.exists());
     }
 
     #[test]

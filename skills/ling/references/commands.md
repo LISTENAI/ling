@@ -1,6 +1,6 @@
 # Ling 命令参考
 
-适用于 `ling >= 1.0.0`。只读取与当前任务有关的章节。
+适用于 `ling >= 1.0.1`。只读取与当前任务有关的章节。
 
 所有分页列表的页码范围为 `1..=1000`，每页数量范围为 `1..=100`。
 对应参数分别为 `--page` 和 `--page-size`；知识库命令使用 `--size`。
@@ -11,12 +11,17 @@
 ling --version
 ling login
 ling login --json
+ling logout
+ling logout --json
 ling account
 ling account --json
 ```
 
 登录由用户本人完成。API Key 获取地址：
 `https://platform.listenai.com/keys`。
+`logout` 只清除本机保存的 API Key，保留本地 Device ID，不撤销平台密钥。
+如果存在非空的 `LING_API_KEY`，后续命令仍会使用环境变量中的凭据；默认输出
+和 `--json` 都会明确指出这一状态。
 
 ## AI 能力
 
