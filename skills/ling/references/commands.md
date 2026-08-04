@@ -10,18 +10,18 @@
 ```bash
 ling --version
 ling login
-ling login --json
 ling logout
-ling logout --json
 ling account
 ling account --json
 ```
 
 登录由用户本人完成。API Key 获取地址：
 `https://platform.listenai.com/keys`。
+交互式 `login` 对每个输入字符只回显一个 `*`，成功后只确认登录结果；它不
+提供 JSON 输出，需要机器可读的账号信息时使用 `account --json`。
 `logout` 只清除本机保存的 API Key，保留本地 Device ID，不撤销平台密钥。
-如果存在非空的 `LING_API_KEY`，后续命令仍会使用环境变量中的凭据；默认输出
-和 `--json` 都会明确指出这一状态。
+如果存在非空的 `LING_API_KEY`，后续命令仍会使用环境变量中的凭据，命令会
+明确指出这一状态。`logout` 不提供 JSON 输出。
 
 ## AI 能力
 

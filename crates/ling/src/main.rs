@@ -56,11 +56,7 @@ enum Command {
     /// Login with an API Key from platform.listenai.com/keys.
     Login(LoginArgs),
     /// Forget the API Key saved by ling on this computer.
-    Logout {
-        /// Print the result as JSON.
-        #[arg(long)]
-        json: bool,
-    },
+    Logout,
     /// Show the current API account.
     Account {
         /// Print the raw JSON response.
@@ -84,9 +80,6 @@ struct LoginArgs {
     /// API Key from platform.listenai.com/keys. If omitted, ling prompts for it.
     #[arg(long = "api-key", env = "LING_API_KEY")]
     api_key: Option<String>,
-    /// Print the raw JSON response.
-    #[arg(long)]
-    json: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -1181,8 +1174,8 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             login(ctx.api_base_url, args).await?;
             Ok(ExitCode::SUCCESS)
         }
-        Command::Logout { json } => {
-            logout_command(json)?;
+        Command::Logout => {
+            logout_command()?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Account { json } => {
@@ -1220,33 +1213,22 @@ async fn login(api_base_url: String, args: LoginArgs) -> Result<()> {
         None => secret_prompt::prompt_api_key()?,
     };
 
-    let output = api_key::login_with_api_key(&api_base_url, &api_key).await?;
+    api_key::login_with_api_key(&api_base_url, &api_key).await?;
 
     let mut cfg = config::LingConfig::load()?;
     cfg.api_key = Some(api_key::strip_bearer(&api_key));
     cfg.save()?;
 
-    if args.json {
-        print_json(&output)
-    } else {
-        eprintln!("{}", api_key::render_login_success(&output, &api_base_url));
-        Ok(())
-    }
+    eprintln!("{}", api_key::render_login_success());
+    Ok(())
 }
 
-fn logout_command(json: bool) -> Result<()> {
+fn logout_command() -> Result<()> {
     let saved_api_key_removed = config::LingConfig::clear_saved_api_key()?;
     let environment_api_key_active = std::env::var("LING_API_KEY")
         .ok()
         .map(|api_key| !api_key::strip_bearer(&api_key).is_empty())
         .unwrap_or(false);
-
-    if json {
-        return print_json(&serde_json::json!({
-            "saved_api_key_removed": saved_api_key_removed,
-            "environment_api_key_active": environment_api_key_active,
-        }));
-    }
 
     if saved_api_key_removed {
         println!("已退出登录：本地保存的 API Key 已清除。");
@@ -5860,27 +5842,40 @@ mod tests {
     }
 
     #[test]
-    fn parses_login_json() {
-        let cli = Cli::try_parse_from(["ling", "login", "--api-key", "test-key", "--json"])
-            .expect("parse login json");
+    fn parses_login_api_key() {
+        let cli = Cli::try_parse_from(["ling", "login", "--api-key", "test-key"])
+            .expect("parse login api key");
 
         match cli.command {
             Command::Login(login) => {
                 assert_eq!(login.api_key.as_deref(), Some("test-key"));
-                assert!(login.json);
             }
             other => panic!("expected login command, got {other:?}"),
         }
     }
 
     #[test]
-    fn parses_logout_json() {
-        let cli = Cli::try_parse_from(["ling", "logout", "--json"]).expect("parse logout json");
+    fn login_rejects_json_output() {
+        let error = Cli::try_parse_from(["ling", "login", "--json"])
+            .expect_err("login is an interactive command without JSON output");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn parses_logout() {
+        let cli = Cli::try_parse_from(["ling", "logout"]).expect("parse logout");
 
         match cli.command {
-            Command::Logout { json } => assert!(json),
+            Command::Logout => {}
             other => panic!("expected logout command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn logout_rejects_json_output() {
+        let error = Cli::try_parse_from(["ling", "logout", "--json"])
+            .expect_err("logout is an interactive command without JSON output");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 const API_KEY_PROMPT: &str =
-    "请打开 https://platform.listenai.com/keys 获取 API Key，然后粘贴到这里: ";
+    "请打开 https://platform.listenai.com/keys 获取 API Key。\r\nAPI Key: ";
 
 pub fn prompt_api_key() -> Result<String> {
     platform::prompt_api_key()
@@ -31,14 +31,12 @@ mod platform {
 
     struct HiddenPrompt {
         api_key: String,
-        preview_shown: bool,
     }
 
     impl HiddenPrompt {
         fn new() -> Self {
             Self {
                 api_key: String::new(),
-                preview_shown: false,
             }
         }
 
@@ -48,7 +46,7 @@ mod platform {
             loop {
                 match read_byte()? {
                     b'\r' | b'\n' => {
-                        self.finish_input()?;
+                        write_stderr(b"\r\n")?;
                         return Ok(std::mem::take(&mut self.api_key));
                     }
                     3 => {
@@ -60,46 +58,52 @@ mod platform {
                         anyhow::bail!("未读取到 API Key");
                     }
                     8 | 127 => {
-                        self.api_key.pop();
+                        self.pop_char()?;
                     }
                     21 => {
+                        let displayed = self.api_key.chars().count();
                         self.api_key.clear();
+                        erase_mask(displayed)?;
                     }
                     b'\x1b' => {
                         if let Some(paste) = read_bracketed_paste()? {
-                            self.api_key.push_str(&paste);
-                            self.show_preview()?;
+                            self.push_text(&paste)?;
                         }
                     }
                     byte if !byte.is_ascii_control() => {
                         self.api_key.push(byte as char);
+                        write_stderr(b"*")?;
                     }
                     _ => {}
                 }
             }
         }
 
-        fn finish_input(&mut self) -> Result<()> {
-            if self.preview_shown {
-                return Ok(());
+        fn push_text(&mut self, text: &str) -> Result<()> {
+            let mut added = 0;
+            for character in text.chars().filter(|character| !character.is_control()) {
+                self.api_key.push(character);
+                added += 1;
             }
-
-            if self.api_key.trim().is_empty() {
-                write_stderr(b"\r\n")?;
-            } else {
-                self.show_preview()?;
+            if added > 0 {
+                write_stderr("*".repeat(added).as_bytes())?;
             }
             Ok(())
         }
 
-        fn show_preview(&mut self) -> Result<()> {
-            writeln_stderr(format_args!(
-                "\r\n已读取 API Key：{}",
-                crate::api_key::preview_key(&self.api_key)
-            ))?;
-            self.preview_shown = true;
+        fn pop_char(&mut self) -> Result<()> {
+            if self.api_key.pop().is_some() {
+                write_stderr(b"\x08 \x08")?;
+            }
             Ok(())
         }
+    }
+
+    fn erase_mask(count: usize) -> io::Result<()> {
+        if count > 0 {
+            write_stderr("\x08 \x08".repeat(count).as_bytes())?;
+        }
+        Ok(())
     }
 
     struct TerminalGuard {
@@ -238,13 +242,6 @@ mod platform {
         stderr.write_all(bytes)?;
         stderr.flush()
     }
-
-    fn writeln_stderr(args: std::fmt::Arguments<'_>) -> io::Result<()> {
-        let mut stderr = io::stderr().lock();
-        stderr.write_fmt(args)?;
-        stderr.write_all(b"\n")?;
-        stderr.flush()
-    }
 }
 
 #[cfg(not(unix))]
@@ -252,8 +249,12 @@ mod platform {
     use super::*;
 
     pub fn prompt_api_key() -> Result<String> {
-        let api_key = rpassword::prompt_password(API_KEY_PROMPT)?;
-        eprintln!("已读取 API Key：{}", crate::api_key::preview_key(&api_key));
-        Ok(api_key)
+        let config = rpassword::ConfigBuilder::new()
+            .password_feedback_mask('*')
+            .build();
+        Ok(rpassword::prompt_password_with_config(
+            API_KEY_PROMPT,
+            config,
+        )?)
     }
 }

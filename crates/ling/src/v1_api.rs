@@ -88,7 +88,7 @@ pub fn render_account(value: &Value) -> Result<String> {
         .unwrap_or("-");
 
     Ok(format!(
-        "账号信息：\nID: {id}\n名称: {name}\n类型: {account_type}\n\n当前已登录。下一步可执行：\n- ling ai models\n- ling app list\n- ling app --product-id <product_id> init <agent_name>\n- ling app inspect <product_id> 后用 adb shell device set_pid/set_sid 切换设备 PID/SID\n\n使用 --json 输出原始 JSON。"
+        "账号信息：\nID: {id}\n名称: {name}\n类型: {account_type}"
     ))
 }
 
@@ -287,8 +287,9 @@ mod tests {
         assert!(output.contains("ID: 123"));
         assert!(output.contains("名称: ListenAI"));
         assert!(output.contains("类型: developer"));
-        assert!(output.contains("当前已登录"));
-        assert!(output.contains("ling app inspect <product_id>"));
+        assert!(!output.contains("当前已登录"));
+        assert!(!output.contains("下一步"));
+        assert!(!output.contains("--json"));
     }
 
     #[test]
