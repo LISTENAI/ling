@@ -1,0 +1,74 @@
+﻿一级分类,二级分类,语料,期望回复,期望工具_v2,期望工具_v1,期望工具_v1_备注
+,,清除上下文,,,,
+"前提：
+1、人设：小聆老师
+2、知识库：
+     1695017280304说明书_图片&表格等.docx
+      QA：雷军的经历
+3、用户画像：鲁西西",,,,,,
+清除上下文,,清除上下文,,,,
+,,删除所有闹钟,,manage_reminders,,
+,,确定,,manage_memo,,
+,,删除所有备忘,,manage_memo,,
+音乐点播,随机播放,播放音乐,,play_music,播放音乐。,aiui_musicX
+,指定歌手播放,播放刘若英的歌,刘若英,play_music,,
+,指定歌名播放,我想听后来这首歌,后来,play_music,,
+播放控制,播放控制,暂停,,playback_control,暂停播放,aiui_control
+,,继续,,playback_control,继续播放,aiui_control
+,,下一首,,playback_control,下一首,aiui_control
+,,上一首,,playback_control,上一首,aiui_control
+,,重播,,playback_control,,
+音量控制,设置音量,音量调到50%,0.5,set_volume,音量调到50%。,aiui_control
+,调节音量,小声一点,调小,set_volume,音量调低。,aiui_control
+,,大声一点,调大,set_volume,音量调高。,aiui_control
+,,音量最大,最大,set_volume,音量调至最大。,aiui_control
+,,音量最小,最小,set_volume,音量最小。,aiui_control
+,,静音,,set_volume,静音。,aiui_control
+,,取消静音,取消静音|音量复活|已恢复,set_volume,取消静音。,aiui_control
+,音量查询,当前音量多少,0.5,get_volume,查询当前音量。,aiui_control
+文生图,图片生成,帮我画一只狗,,draw_image,画一只狗。,function_draw_hd_image
+,图片修改,将上面的狗修改为猫,,edit_image,,
+图片理解,图片理解,拍个照片看看我今天穿的怎么样,,take_photo,,
+联网搜索,联网搜索,联网搜索最新iphone的价格,最新iPhone价格|最新iPhone的价格|最新iPhone,online_realtime_search,查询最新iPhone的价格。,web_search
+人设,人设问答,你叫什么名字,小聆,,,
+,,今年几岁,25岁,,,
+,,哪里人,合肥,,,
+,,你做什么工作,计算机,,,
+知识库,知识库文件,如何清洗过滤网,,,,
+,QA,雷军的经历,雷军(1969年12月16日一)，湖北仙桃人，无党派人士,,,
+LED控制,控制led开关,打开led开关,,led_switch,,
+,控制led闪烁模式,LED慢闪,,led_blink,,
+亮度控制,亮度设置,设置显示器的亮度为50。,,display_set_brightness,,
+,亮度查询,当前亮度多少,,display_get_brightness,,
+获取设备版本信息,获取设备版本信息,当前设备版本信息,,device_version_info,,
+退出会话,退出,退出,,ls.built_in.exit,退出,function_exit_continuous
+设置表情,表情,给我撒个娇,,set_emotion,,
+用户画像,,我叫什么名字,鲁西西,,,
+记忆系统,短期记忆-事件记录,我的车停在商场负三层的A17车位。,,manage_memo,manage_memo,"action: CREATE
+text: A17车位"
+,短期记忆-事件查询,清除上下文,,,,
+,,我的车停在哪里了？,A17,,,
+,短期记忆-事件修改,我的车停在商场负三层的A20车位。,,manage_memo,,
+,,清除上下文,,,,
+,,我的车停在哪里了？,A20,,,
+,短期记忆-事件删除,不要记我的车停的位置了,,manage_memo,,
+,,清除上下文,,,,
+,,我的车停在哪里了？,,,,
+,短期记忆-设置闹钟,1分钟后提醒我,,manage_reminders,,
+,,每天早上八点提醒我起床,,manage_reminders,,
+,,每周日上午九点提醒我起床,,manage_reminders,,
+,短期记忆-查询闹钟,我有几个闹钟,个闹钟,,,
+,长期记忆-个人客观事实,我叫李四,,,,
+,,清除上下文,,,,
+,,我叫什么名字,李四,,,
+,长期记忆-重要人生经历,我昨天拿到律师证了,,,,
+,,清除上下文,,,,
+,,我的重要成就,律师证,,,
+,长时记忆-主观偏好,以前我很喜欢香菜，但现在完全不吃了,,,,
+,,清除上下文,,,,
+,,我需要忌口什么,香菜,,,
+其他,天气,今天天气怎么样,今天广州|广州今天,get_weather_info,查询今天天气。,aiui_weather
+,时间,现在几点,现在是,,查询当前时间。,aiui_datetimePro
+,笑话,给我讲个笑话,,spoken_content ,,
+,故事,讲个故事,,spoken_content ,,
+,股票,科大讯飞的股票,科大讯飞,online_realtime_search,查询科大讯飞的股票信息。,aiui_stock
