@@ -153,10 +153,21 @@ struct CommandSpec {
     prefix_args: Vec<OsString>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AgentContext {
     pub api_base_url: String,
+    pub environment: String,
     pub saved_api_key: Option<String>,
+}
+
+impl Default for AgentContext {
+    fn default() -> Self {
+        Self {
+            api_base_url: String::new(),
+            environment: "production".to_string(),
+            saved_api_key: None,
+        }
+    }
 }
 
 /// 拉取最新 Base 项目模板并初始化本地工程，返回项目目录。
@@ -428,6 +439,7 @@ fn framework_sdk_latest_url(ctx: &AgentContext) -> Result<Url> {
         segments.pop_if_empty();
         segments.extend(["external", "framework", "sdk", "latest"]);
     }
+    url.query_pairs_mut().append_pair("env", &ctx.environment);
     Ok(url)
 }
 
@@ -1418,6 +1430,21 @@ mod tests {
     }
 
     #[test]
+    fn framework_sdk_latest_url_includes_environment() {
+        let url = framework_sdk_latest_url(&AgentContext {
+            api_base_url: "https://staging-api.listenai.com/gateway".to_string(),
+            environment: "staging".to_string(),
+            saved_api_key: None,
+        })
+        .expect("latest SDK URL");
+
+        assert_eq!(
+            url.as_str(),
+            "https://staging-api.listenai.com/gateway/external/framework/sdk/latest?env=staging"
+        );
+    }
+
+    #[test]
     fn read_or_init_project_version_writes_marker() {
         let dir = temp_dir("ling-project-version-test").expect("temp dir");
         let marker = dir.join(AGENT_PROJECT_VERSION_FILE);
@@ -1506,6 +1533,7 @@ mod tests {
         let opts = resolve_deploy_options(
             &AgentContext {
                 api_base_url: "https://api.listenai.com".to_string(),
+                environment: "production".to_string(),
                 saved_api_key: None,
             },
             DeployArgs {
@@ -1604,6 +1632,7 @@ mod tests {
         env::remove_var("LISTENAI_API_KEY");
         let ctx = AgentContext {
             api_base_url: "https://api.listenai.com".to_string(),
+            environment: "production".to_string(),
             saved_api_key: Some("Bearer saved-key".to_string()),
         };
         assert_eq!(framework_sdk_api_key(&ctx).as_deref(), Some("saved-key"));
@@ -1615,6 +1644,7 @@ mod tests {
         env::set_var("LISTENAI_API_KEY", "legacy-key");
         let ctx = AgentContext {
             api_base_url: "https://api.listenai.com".to_string(),
+            environment: "production".to_string(),
             saved_api_key: None,
         };
         assert_eq!(framework_sdk_api_key(&ctx).as_deref(), Some("legacy-key"));

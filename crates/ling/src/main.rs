@@ -7,7 +7,7 @@ mod test_support;
 mod v1_api;
 
 use anyhow::{anyhow, Context, Result};
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use ling_plugin_app::request::{RequestDirection, RequestEvent, RequestInput, RequestOptions};
 use ling_plugin_app::{config_view, management};
 use serde_json::Value;
@@ -26,6 +26,7 @@ const PLATFORM_KB_URL: &str = "https://platform.listenai.com/datasets";
 const OPEN_WEB_PROMPT: &str = "按 [Enter] 在浏览器中打开该链接；按 [Ctrl-C] 取消。";
 const MAX_HOTWORD_CHARS: usize = 24;
 const MAX_HOTWORDS_TOTAL_CHARS: usize = 1024;
+const STAGING_API_BASE_URL: &str = "https://staging-api.listenai.com";
 const APP_CONFIG_EDITABLE_KEYS: [&str; 8] = [
     "name",
     "description",
@@ -47,8 +48,40 @@ struct Cli {
     )]
     api_base_url: String,
 
+    #[arg(long, value_enum, hide = true, conflicts_with = "api_base_url")]
+    env: Option<CliEnvironment>,
+
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CliEnvironment {
+    Production,
+    Staging,
+}
+
+impl CliEnvironment {
+    fn api_base_url(self) -> &'static str {
+        match self {
+            Self::Production => ling_core::DEFAULT_API_BASE_URL,
+            Self::Staging => STAGING_API_BASE_URL,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::Staging => "staging",
+        }
+    }
+}
+
+fn resolve_api_base_url(configured: &str, environment: Option<CliEnvironment>) -> String {
+    environment
+        .map(CliEnvironment::api_base_url)
+        .unwrap_or(configured)
+        .to_string()
 }
 
 #[derive(Debug, Subcommand)]
@@ -1160,14 +1193,20 @@ async fn main() -> ExitCode {
 /// 各 handler 共用的运行时上下文（从 Cli 顶层参数解构而来）。
 struct Ctx {
     api_base_url: String,
+    environment: String,
 }
 
 async fn run(cli: Cli) -> Result<ExitCode> {
     let Cli {
         api_base_url,
+        env,
         command,
     } = cli;
-    let ctx = Ctx { api_base_url };
+    let environment = env.unwrap_or(CliEnvironment::Production);
+    let ctx = Ctx {
+        api_base_url: resolve_api_base_url(&api_base_url, env),
+        environment: environment.as_str().to_string(),
+    };
 
     match command {
         Command::Login(args) => {
@@ -1475,6 +1514,7 @@ async fn app_command(cli: &Ctx, args: AppArgs) -> Result<ExitCode> {
             };
             let ctx = ling_plugin_app_project::AgentContext {
                 api_base_url: cli.api_base_url.clone(),
+                environment: cli.environment.clone(),
                 saved_api_key,
             };
             return ling_plugin_app_project::deploy_command(&ctx, args).await;
@@ -3832,6 +3872,7 @@ async fn wiki_command(args: WikiArgs) -> Result<()> {
 fn agent_context(cli: &Ctx) -> Result<ling_plugin_app_project::AgentContext> {
     Ok(ling_plugin_app_project::AgentContext {
         api_base_url: cli.api_base_url.clone(),
+        environment: cli.environment.clone(),
         saved_api_key: resolve_optional_api_key()?,
     })
 }
@@ -5551,6 +5592,47 @@ mod tests {
         ])
         .expect_err("deploy must not expose a separate endpoint override");
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn hidden_environment_selects_api_base_url() {
+        let cli = Cli::try_parse_from(["ling", "--env", "staging", "app", "build"])
+            .expect("parse staging environment");
+
+        assert_eq!(cli.env, Some(CliEnvironment::Staging));
+        assert_eq!(
+            resolve_api_base_url(&cli.api_base_url, cli.env),
+            "https://staging-api.listenai.com"
+        );
+        assert_eq!(
+            resolve_api_base_url(
+                "https://custom.example.test",
+                Some(CliEnvironment::Production)
+            ),
+            "https://api.listenai.com"
+        );
+    }
+
+    #[test]
+    fn environment_conflicts_with_explicit_api_base_url() {
+        let err = Cli::try_parse_from([
+            "ling",
+            "--env",
+            "staging",
+            "--api-base-url",
+            "https://custom.example.test",
+            "app",
+            "build",
+        ])
+        .expect_err("environment and API base URL must conflict");
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn environment_is_hidden_from_help() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(!help.contains("--env"));
     }
 
     #[test]
